@@ -118,8 +118,10 @@ class SharingManager:
             kwargs = {}
             if self.ssl_files:
                 kwargs = {"ssl_certfile": self.ssl_files[0], "ssl_keyfile": self.ssl_files[1]}
+            # lifespan="off": the app's startup/shutdown (job supervisor) belongs to the main
+            # listener; this second listener only serves requests.
             config = uvicorn.Config(self.app, host=address, port=port, log_level="warning",
-                                    access_log=False, server_header=False, **kwargs)
+                                    access_log=False, server_header=False, lifespan="off", **kwargs)
             server = uvicorn.Server(config)
             thread = threading.Thread(target=server.run, name="proseway-lan", daemon=True)
             thread.start()
