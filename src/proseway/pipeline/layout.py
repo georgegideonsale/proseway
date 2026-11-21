@@ -365,6 +365,7 @@ def _merge_same_baseline(lines: list[Line]) -> list[Line]:
 # ---------------------------------------------------------------------------
 
 EQ_NUMBER = re.compile(r"^\(\s*[\dA-Z]{1,4}(?:\.\d{1,3})?[a-z]?\s*\)$")
+TABLE_MATH = set("=∑∏∫∮√∂∇≤≥≠≈≡∈∉⊂⊃⊆⊇∪∩∀∃→⇒⇔")  # not ± or ×, which results tables use
 LIST_MARK = re.compile(r"^(?:[•◦▪▫‣⁃●○■□\-–—*]|\(?\d{1,3}[.)]|\(?[a-zA-Z][.)]|\(?[ivxIVX]{1,5}[.)])$")
 
 
@@ -485,6 +486,9 @@ def _is_table(run: list[list[Line]]) -> list[tuple[float, float]] | None:
     words = [len(ln.text.split()) for ln in cells]
     if sum(words) / len(words) > 5:
         return None  # sentences, not cells
+    mathy = sum(1 for ln in cells if ln.math >= 0.2 or any(ch in TABLE_MATH for ch in ln.text))
+    if mathy >= 0.25 * len(cells):
+        return None  # a display equation: limits, fractions and sums stacked in rows
     by_band: dict[int, list[Line]] = defaultdict(list)
     for ln in cells:
         by_band[_band_of(ln, bands)].append(ln)

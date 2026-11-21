@@ -346,15 +346,20 @@ def _clean_char_text(t: str) -> str:
 
 def _dedupe_overprint(chars: list[dict]) -> list[dict]:
     """Drop glyphs drawn twice in the same place (fake bold, shadows). pdfplumber's
-    dedupe_chars does this for the other engine."""
-    seen: set[tuple] = set()
+    dedupe_chars does this for the other engine.
+
+    PDFium splits ligatures into their letters with one shared box: the "ff" of "officers"
+    is two "f"s drawn one right after the other at the same spot. Those are real letters, so
+    only a copy drawn at some other point in the content stream counts as a duplicate."""
+    seen: dict[tuple, int] = {}
     out: list[dict] = []
     for c in chars:
         if c["text"].strip() and c["x1"] > c["x0"]:
             key = (c["text"], round(c["x0"]), round(c["top"]))
-            if key in seen:
+            first = seen.get(key)
+            if first is not None and abs(c.get("_i", 0) - first) > 1:
                 continue
-            seen.add(key)
+            seen[key] = c.get("_i", 0)
         out.append(c)
     return out
 
@@ -788,8 +793,10 @@ def find_figures(lines: list[dict], images: list[dict], graphics: list, tables: 
                 continue
             if min(g[2] - g[0], g[3] - g[1]) < MIN_FIGURE_SIDE * 0.66:
                 continue
-        elif inside and not figure_text_ok(inside, body):
-            members = []  # an image behind prose: the prose stays in the flow
+        elif inside and (not figure_text_ok(inside, body) or _area(region["box"]) > page_area * 0.5):
+            # An image behind prose, or a scanned page under its own text layer: the text
+            # stays in the reading flow.
+            members = []
         region["members"] = set(members)
         accepted.append(region)
 

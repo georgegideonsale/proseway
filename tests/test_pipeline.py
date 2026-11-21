@@ -139,6 +139,35 @@ def test_two_column_prose_is_never_a_table(lib, tmp_path, engine, monkeypatch):
         assert not [b for b in blocks(db, bid) if b["type"] == "table"]
 
 
+def test_ligature_letters_are_not_taken_for_overprint():
+    """PDFium reports the 'ff' ligature of 'officers' as two f's with the same box; both stay.
+    A copy of a glyph drawn later at the same spot (fake bold) is dropped."""
+    from proseway.pipeline.extract import lines_from_chars
+
+    def ch(t, x0, w=5.0):
+        return {"text": t, "fontname": "Times", "size": 10.0, "x0": x0, "x1": x0 + w,
+                "top": 100.0, "bottom": 110.0, "upright": True}
+
+    word = [ch("o", 0), ch("f", 5, 9), ch("f", 5, 9), ch("i", 14), ch("c", 18), ch("e", 23), ch("r", 28), ch("s", 33)]
+    assert lines_from_chars(word)[0]["t"] == "officers"
+    bold = [ch("B", 0), ch("e", 5), ch("d", 10), ch("B", 0.3), ch("e", 5.3), ch("d", 10.3)]
+    assert lines_from_chars(bold)[0]["t"] == "Bed"
+
+
+def test_scan_text_layer_is_not_figure_text():
+    """A sparse scanned page (title page) under its own OCR text layer: the page image stays a
+    picture and the short title lines stay text, even though they look like labels."""
+    from proseway.pipeline.extract import find_figures
+
+    title = ["THE HISTORY", "OF THE", "DECLINE AND FALL", "OF THE", "ROMAN EMPIRE"]
+    lines = [{"t": t, "x0": 200.0, "x1": 200.0 + 9 * len(t), "top": 200.0 + 30 * k, "bot": 214.0 + 30 * k,
+              "sz": 14.0, "m": False} for k, t in enumerate(title)]
+    page_image = {"x0": 0.0, "top": 0.0, "x1": 612.0, "bot": 550.0}
+    kept, figs = find_figures(lines, [page_image], [], [], 612.0, 792.0)
+    assert [ln["t"] for ln in kept] == title
+    assert len(figs) == 1 and "text" not in figs[0]
+
+
 def _ocr_line(text: str, x0: float, top: float, size: float, width: float | None = None) -> dict:
     """A line as the OCR engine reports it: size estimated from the box height."""
     return {"t": text, "x0": x0, "x1": x0 + (width or len(text) * size * 0.5), "top": top,
