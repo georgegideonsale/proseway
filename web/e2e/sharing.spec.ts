@@ -8,7 +8,7 @@ import { Server } from "./server";
 let server: Server;
 
 test.beforeAll(async ({}, info) => {
-  // 18769/18770 are taken by the reader's e2e specs on another branch.
+  // Only used with PROSEWAY_E2E_FIXED_PORTS=1; otherwise the OS picks a free port.
   server = new Server(info.project.name === "phone" ? 18782 : 18781);
   await server.start();
 });

@@ -175,6 +175,36 @@ Nits:
 - Playwright phone, full suite: not re-run in this round, because of the machine's memory
   pressure; the coordinator plans a re-run.
 
+## Review round 3: `reading.spec.ts` failing on desktop
+
+The coordinator saw `reading.spec.ts:59` fail ("Notes and highlights" outside the viewport),
+then `:125` and `:140` time out waiting for `.book a`. It wasn't the code in c0ed17d: for the
+local listener none of it changes behaviour (no 401, `forgetOfflineData` only runs for LAN
+sessions, and the e2e book has no images). The cause was the **e2e harness sharing fixed ports
+across worktrees.** While I investigated, port 18765 was held by
+`reader-chapter-window-39d481`'s own e2e server.
+
+- `proseway --port 18765` exits when the port is taken, but `Server.start()` only polled
+  `/api/info`, got the other worktree's answer, and the test carried on against another
+  branch's build and library.
+- `reading.spec.ts:59` restarts the server mid-test, which opens the same window again.
+- Reproduced here: with the other worktree's server on 18765, a run failed because "Test Book"
+  was already in the library. In another run my new guard reported "port 18765 was taken by
+  another process while the server restarted", and `:125` then timed out on `.book a`: the
+  coordinator's symptom.
+
+Fix, in `web/e2e/server.ts`:
+- Each `Server` gets a free port from the OS and keeps it across restarts.
+- A restart fails loudly if something else is serving on the port. This is checked by asking
+  `/api/info`, not by a bind probe: on Windows, the old server's connections in TIME_WAIT make
+  an exclusive bind fail even though nothing is listening. A bind-probe version gave a false
+  alarm on the phone project.
+- The readiness check only accepts an answer while our own process is still running.
+- `PROSEWAY_E2E_FIXED_PORTS=1` brings back the ports the specs name, for debugging.
+- Specs only use `server.url`, so they're unchanged.
+- Regression check: run `reading.spec.ts` while something else listens on 18765. It passed
+  3/3 that way, with the other worktree's server still on the port.
+
 ## Needs a real phone (Untested)
 
 - **iOS:**
@@ -207,4 +237,5 @@ Nits:
   logged, not fatal.
 - **Batched imports (pre-existing):** one request for several PDFs, so the 1 GB + 10 MB limit
   applies to the batch.
-- **e2e ports:** `sharing.spec.ts` uses 18781/18782.
+- **e2e ports:** no longer fixed (see review round 3). If another branch also edits
+  `web/e2e/server.ts`, keep the free-port logic when merging.
