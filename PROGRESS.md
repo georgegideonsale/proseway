@@ -57,9 +57,41 @@ v0.2 work is done on separate branches, one per task. Each one is reviewed (code
 - If the computer's address changes, phones have to trust a new CA. Each CA works for one address only.
 - The plain-HTTP setup page is trust-on-first-use. If someone on the network tampers with it, the attacker's CA would have no constraints. SECURITY.md says so and recommends sending the certificate straight from the computer.
 
+### Merged: Reader with a bounded chapter window (`claude/reader-chapter-window-39d481`, details in `docs/progress/reader-chapter-window.md`)
+
+**What it adds:**
+- **The reader keeps only the chapters near your reading position mounted.** This closes the v0.1 issue "the reader never unloads chapters".
+  - A request for the next chapter is never refused, so short opening chapters (cover, title page) can't stall loading.
+  - A chapter is unloaded only once it lies entirely more than 2,400 px off screen, and only when more than 3 chapters are mounted.
+  - With ordinary chapters that keeps 3–6 mounted. A book made of tiny chapters keeps more, by design.
+- **Footnotes and endnotes in a chapter that isn't loaded** are looked up with one request to a new read-only endpoint, `GET /api/books/{id}/blocks/{block_id}`. A dangling reference costs one 404. Misses are remembered, and repeated clicks share one request.
+- **Jumps:**
+  - only the most recent jump moves the page;
+  - a jump's target is held in place against layout shifts for up to 1 s, which fixes a bug that was already in v0.1: on a phone, restoring a saved position landed about four paragraphs late;
+  - the reading area is marked `aria-busy` only while a jump is in progress;
+  - a polite live region announces "Loading page N…", "Moved to page N." and "Looking up the note…";
+  - focus falls back to the reading area if the focused element's chapter unloads.
+- **Fixed, separately:** closing the Contents panel blanked the reader in current Chromium. A one-line effect was returning `scrollIntoView`'s result as its cleanup.
+
+**Working (verified by running it):**
+- **pytest:** all passed on the branch and on main after the merge, including the new endpoint test.
+- **ruff:** clean.
+- **vitest:** 25 passed on main. These include a layout simulator that reads books of long, tiny (200 chapters, at most 50 mounted) and mixed chapters at phone size, to the end and back. It never stalls, always settles, and keeps the window bounded.
+- **Playwright on main after the merge:** desktop 15/15; phone 14 passed and 1 skipped by design. `chapters.spec.ts` checks:
+  - at most 3 chapters mounted while reading through 6 chapters, with the text not moving;
+  - short opening chapters loading without any scrolling;
+  - restoring a position in the middle of the book;
+  - a jump from the Notes panel into an unloaded chapter;
+  - a highlight redrawn after its chapter remounts;
+  - a note lookup into an unloaded chapter costing exactly one request.
+- **Stability on this machine:** some runs had Chromium crash at `newPage`. Those tests passed on re-run, and none failed an assertion.
+
+**Untested:**
+- Safari, Firefox and real phones, including iOS momentum scrolling combined with the scroll correction and the hold.
+- Memory use wasn't measured on a real 1,000-page book. The window is bounded by design and by the e2e counts, but heap and DOM size weren't benchmarked.
+
 ### Still in review
 
-- **Reader: bounded chapter window** (`claude/reader-chapter-window-39d481`).
 - **Pipeline: figures, tables without ruling lines, OCR headers** (`claude/pipeline-quality-50d649`). An independently built alternative, kept as `keep/pipeline-quality-7fe68e`, was reviewed and not chosen.
 
 ## Summary
@@ -174,7 +206,7 @@ A separate reviewer agent, which hadn't seen the build process, reviewed the cod
 
 ### Not fixed tonight (logged here)
 
-- **The reader never unloads chapters.** Reading straight through a 1,000-page book keeps every chapter mounted. `content-visibility` keeps rendering cheap, but memory grows on phones. Next step: a window of about 3 chapters.
+- ~~**The reader never unloads chapters.**~~ Fixed since v0.1.0: a bounded chapter window (see above). Memory use on a real 1,000-page book hasn't been measured yet.
 - ~~**Uploads without `Content-Length` skip the early size check.**~~ Fixed since v0.1.0: limits are enforced on bodies while they stream in.
 - ~~**EPUB `dc:language`** is always `en`.~~ Fixed since v0.1.0: it comes from the PDF's `/Lang`, or is `und`.
 - **Fonts:** whether Fontsource's range-split font files count as "modified" under the OFL for the two fonts with Reserved Font Names (Source Serif 4, OpenDyslexic) is unsettled. See `docs/research/licenses.md`.

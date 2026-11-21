@@ -11,6 +11,9 @@ All notable changes to this project are documented here. The format follows [Kee
   - `proseway --new-phone-certificate` to replace it.
   - Plain HTTP stays available as an explicit choice.
 - **EPUB language:** `dc:language` and `xml:lang` come from the PDF's declared language, or `und` when it has none.
+- **Bounded chapter window in the reader:** only chapters near your reading position stay mounted, so memory stays bounded on long books.
+- **Note lookup:** footnotes and endnotes in unloaded chapters cost one request, to the new `GET /api/books/{id}/blocks/{block_id}`.
+- **Reader announcements:** a polite live region announces jumps and note lookups. `aria-busy` is set while a jump is in progress.
 
 ### Changed
 - **Pairing cookies:** separate for each scheme. `__Host-pw_device` over HTTPS, with its own token hash, so a token issued over HTTP doesn't work over HTTPS.
@@ -20,6 +23,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 - **Request size limits** now apply to bodies as they stream in, including chunked uploads without `Content-Length`.
+- **Contents panel:** closing it no longer blanks the reader in current Chromium.
+- **Saved position on phones:** restoring it no longer lands a few paragraphs late. A jump's target is held in place against layout shifts.
+- **Rapid jumps:** when you make several in a row, the last one wins.
 
 ### Security
 - **CA:** never silently replaced; a damaged or expiring CA is reported as an error. Keys are owner-only on POSIX and Windows.
