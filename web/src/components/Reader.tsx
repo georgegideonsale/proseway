@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import type { Session } from "../App";
 import { usePrefs } from "../lib/prefs";
 import { chaptersToEvict, growWindow, KEEP_PX } from "../lib/chapterWindow";
@@ -80,11 +80,22 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
   const [back, setBack] = useState<Position | null>(null);
   const [footnote, setFootnote] = useState<{ block: Block; rect: DOMRect } | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [busy, setBusy] = useState(0); // chapter downloads in flight, for aria-busy
+  const [busy, setBusy] = useState(0); // chapter downloads in flight (exposed as data-loading)
+  // A jump being loaded or positioned. Only this sets aria-busy: background chapter loads while
+  // reading shouldn't make screen readers hold back the text.
+  const [positioning, setPositioning] = useState(0);
   const [announce, setAnnounce] = useState(""); // polite status for screen readers
+  const sayTimer = useRef<number | undefined>(undefined);
+  /** Announce politely. Cleared first, so the same words are read again on a repeat. */
+  const say = useCallback((msg: string) => {
+    setAnnounce("");
+    window.clearTimeout(sayTimer.current);
+    if (msg) sayTimer.current = window.setTimeout(() => setAnnounce(msg), 60);
+  }, []);
   const articleRef = useRef<HTMLDivElement>(null);
   const loading = useRef(new Map<number, Promise<Block[]>>());
-  const pendingScroll = useRef<{ blockId?: string; seq?: number; flash?: boolean; offset?: number } | null>(null);
+  // `counted`: the jump that set it holds one unit of `positioning`, handed over once it's used.
+  const pendingScroll = useRef<{ blockId?: string; seq?: number; flash?: boolean; offset?: number; counted?: boolean } | null>(null);
   const anchor = useRef<{ id: string; top: number } | null>(null);
   const saveTimer = useRef<number | undefined>(undefined);
   const lastY = useRef(0);
@@ -242,6 +253,8 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
         const top = el.getBoundingClientRect().top + window.scrollY - offset;
         window.scrollTo({ top, behavior: "instant" as ScrollBehavior });
         holdInPlace(el, offset);
+        // The hold now owns the busy state the jump took; both updates land in one render.
+        if (ps.counted) setPositioning((n) => n - 1);
         if (ps.flash) {
           el.classList.remove("flash");
           void el.offsetWidth;
@@ -272,7 +285,7 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
       window.cancelAnimationFrame(raf);
       for (const t of inputs) window.removeEventListener(t, release, true);
       if (releaseHold.current === release) releaseHold.current = null;
-      setBusy((n) => n - 1);
+      setPositioning((n) => n - 1);
     };
     // Layout moving the target changes its position in the document; someone else scrolling (a
     // scrollbar drag, assistive tech, a script) moves the page but not the target within it.
@@ -285,7 +298,11 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
       const docTop = top + y;
       if (Math.abs(y - lastY) > 1 && Math.abs(docTop - lastDocTop) <= 1) return release();
       const drift = top - offset;
-      if (Math.abs(drift) > 1) {
+      // Near the start or end of the book the page can't scroll far enough to reach the offset;
+      // being at the scroll limit counts as in place.
+      const maxY = document.documentElement.scrollHeight - window.innerHeight;
+      const atLimit = (drift > 0 && y >= maxY - 1) || (drift < 0 && y <= 0);
+      if (Math.abs(drift) > 1 && !atLimit) {
         window.scrollBy(0, drift);
         still = 0;
       } else if (++still >= 5) {
@@ -295,7 +312,7 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
       lastDocTop = docTop;
       raf = window.requestAnimationFrame(tick);
     };
-    setBusy((n) => n + 1);
+    setPositioning((n) => n + 1);
     for (const t of inputs) window.addEventListener(t, release, { capture: true, passive: true });
     releaseHold.current = release;
     raf = window.requestAnimationFrame(tick);
@@ -438,48 +455,67 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
 
   /* ----------------------------------------------------------- jumping */
 
+  // Each jump takes a number; when two overlap, only the latest one moves the page.
+  const jumpSeq = useRef(0);
   const jump = useCallback(
     async (t: JumpTarget, opts: { flash?: boolean; remember?: boolean } = {}) => {
+      const mine = ++jumpSeq.current;
       if (opts.remember !== false && pos) setBack(pos);
       setPanel((p) => (window.matchMedia("(max-width: 900px)").matches ? null : p));
       const where = t.page ? `page ${t.page}` : "the passage";
-      if (!loading.current.has(t.chapter)) setAnnounce(`Loading ${where}…`);
+      if (!loading.current.has(t.chapter)) say(`Loading ${where}…`);
+      setPositioning((n) => n + 1);
       try {
         await loadChapter(t.chapter);
       } catch (e) {
-        setAnnounce("");
+        setPositioning((n) => n - 1);
+        if (mine !== jumpSeq.current) return;
+        say("");
         toast(`Couldn't open that part of the book: ${(e as Error).message}`);
         return;
       }
-      setAnnounce(`Moved to ${where}.`);
-      pendingScroll.current = { blockId: t.blockId || undefined, seq: t.seq >= 0 ? t.seq : undefined, flash: opts.flash };
+      if (mine !== jumpSeq.current) {
+        setPositioning((n) => n - 1); // a later jump took over
+        return;
+      }
+      say(`Moved to ${where}.`);
+      // Replacing a pending scroll that was never used releases its busy unit.
+      if (pendingScroll.current?.counted) setPositioning((n) => n - 1);
+      const ps = { blockId: t.blockId || undefined, seq: t.seq >= 0 ? t.seq : undefined, flash: opts.flash, counted: true };
+      pendingScroll.current = ps;
+      // If the target never turns up (a block that no longer exists), don't stay busy forever.
+      window.setTimeout(() => {
+        if (pendingScroll.current !== ps) return;
+        pendingScroll.current = null;
+        setPositioning((n) => n - 1);
+      }, 4000);
       const w = winRef.current;
       // A new array either way, so the layout effect runs and performs the pending scroll.
       applyWin(w && t.chapter >= w[0] && t.chapter <= w[1] ? [w[0], w[1]] : [t.chapter, t.chapter]);
     },
-    [pos, loadChapter, applyWin, toast],
+    [pos, loadChapter, applyWin, toast, say],
   );
 
-  // Footnote and endnote targets can sit in a chapter that isn't cached (endnotes usually live in
-  // the last one). Look them up without mounting anything: the last chapter first, then outward
-  // from the reference. Found notes are remembered.
-  const noteCache = useRef(new Map<string, Block>());
-  async function findNote(id: string, from: number): Promise<Block | null> {
-    const hit = blockIndex.get(id)?.block ?? noteCache.current.get(id);
-    if (hit) return hit;
-    if (!manifest) return null;
-    const idxs = manifest.chapters.map((c) => c.idx);
-    const lastIdx = idxs[idxs.length - 1];
-    const order = [lastIdx, ...idxs.filter((i) => i !== lastIdx).sort((a, b) => Math.abs(a - from) - Math.abs(b - from))];
-    for (const c of order) {
-      const blocks = chapters.get(c) ?? (await api.chapter(bookId, c)).blocks;
-      const b = blocks.find((x) => x.id === id);
-      if (b) {
-        noteCache.current.set(id, b);
-        return b;
-      }
+  // A footnote or endnote can sit in a chapter that isn't cached. Ask the server for that one
+  // block: one request per note, shared by concurrent clicks, and remembered, misses included
+  // (a dangling reference costs a single 404, once).
+  const noteLookups = useRef(new Map<string, Promise<Block | null>>());
+  function findNote(id: string): Promise<Block | null> {
+    const hit = blockIndex.get(id)?.block;
+    if (hit) return Promise.resolve(hit);
+    let p = noteLookups.current.get(id);
+    if (!p) {
+      p = api.block(bookId, id).then(
+        (r) => r.block,
+        (e) => {
+          if (e instanceof ApiError && e.status === 404) return null;
+          noteLookups.current.delete(id); // offline or a server error: allow a retry
+          throw e;
+        },
+      );
+      noteLookups.current.set(id, p);
     }
-    return null;
+    return p;
   }
 
   /* ----------------------------------------------------------- annotations */
@@ -647,16 +683,17 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
         setFootnote({ block: info.block, rect: fn.getBoundingClientRect() });
         return;
       }
-      setAnnounce("Looking up the note…");
-      const from = Number(fn.closest<HTMLElement>("section.chapter")?.dataset.chapter ?? 0);
-      findNote(id, from).then(
+      say("Looking up the note…");
+      findNote(id).then(
         (b) => {
-          setAnnounce("");
+          say("");
+          // The reference may have scrolled out of the window while the note was on its way.
+          if (!fn.isConnected) return;
           if (b) setFootnote({ block: b, rect: fn.getBoundingClientRect() });
           else toast("Couldn't find that note.");
         },
         (err) => {
-          setAnnounce("");
+          say("");
           toast(`Couldn't load the note: ${(err as Error).message}`);
         },
       );
@@ -819,7 +856,7 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
         </nav>
       </header>
 
-      <main id="reading" className="page" tabIndex={-1} aria-busy={busy > 0} data-window={`${win[0]}-${win[1]}`}>
+      <main id="reading" className="page" tabIndex={-1} aria-busy={positioning > 0} data-loading={busy} data-window={`${win[0]}-${win[1]}`}>
         <h1 className="visually-hidden">{book.title}</h1>
         <div id="sentinel-top" className="sentinel" aria-hidden="true" />
         {win[0] > 0 && (

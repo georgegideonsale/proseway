@@ -70,8 +70,14 @@ function simulate(heights: number[], opts: { viewport?: number; step?: number; s
       maxSettle = Math.max(maxSettle, round);
       const [lo, hi] = win;
       const total = span(lo, hi);
-      const isFar = (c: number) =>
-        c === win[0] ? y - span(win[0], c) > KEEP_PX : span(win[0], c - 1) - (y + V) > KEEP_PX;
+      // Positions relative to the viewport, measured from the window as it is before this
+      // request (the layout doesn't change while growWindow decides).
+      const top0 = lo;
+      const isFar = (c: number) => {
+        const top = span(top0, c - 1) - y;
+        const bottom = top + heights[c];
+        return bottom < -KEEP_PX || top > V + KEEP_PX;
+      };
       let next: ChapterWindow | null = null;
       if (hi < last && total - (y + V) <= MARGIN) next = growWindow(win, hi + 1, isFar);
       else if (lo > 0 && y <= MARGIN) next = growWindow(win, lo - 1, isFar);
@@ -116,12 +122,23 @@ describe("reading through a book (simulated layout)", () => {
     expect(r.atStart[0]).toBe(0);
   });
 
-  it("handles a book made entirely of tiny chapters", () => {
-    const r = simulate(Array(60).fill(120));
-    expect(r.atEnd[1]).toBe(59);
+  it("handles a book made entirely of tiny chapters, bounded by distance", () => {
+    const H = 120;
+    const V = 800;
+    const r = simulate(Array(200).fill(H), { viewport: V });
+    expect(r.atEnd[1]).toBe(199);
     expect(r.atStart[0]).toBe(0);
-    // Bounded by distance instead: about (viewport + 2 × KEEP_PX + margins) / 120 px.
-    expect(r.maxCount).toBeLessThan(80);
+    // Mounted text reaches at most KEEP_PX past each side of the screen, plus a partial chapter
+    // at each end and the one just requested: far fewer than the 200 in the book.
+    const bound = Math.ceil((V + 2 * KEEP_PX) / H) + 3;
+    expect(r.maxCount).toBeLessThanOrEqual(bound);
+    expect(r.maxCount).toBeGreaterThan(3); // tiny chapters do lift the count limit
+  });
+
+  it("drops several far chapters at once when a jump leaves many behind", () => {
+    // 0..5 tiny but 6 huge: reading deep into 6, a request for 7 drops 0..4 in one go.
+    const tinyThenHuge = (c: number) => c <= 4;
+    expect(growWindow([0, 6], 7, tinyThenHuge)).toEqual([5, 7]);
   });
 
   it("handles a mix of short and long chapters, starting mid-book", () => {

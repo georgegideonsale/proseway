@@ -65,9 +65,9 @@ async function openAt(page: Page, title: string, at?: { chapter: number; text: s
 }
 
 /**
- * Wait until the reader is idle: no chapter downloads in flight (aria-busy) and the mounted
- * window unchanged over three samples, each two animation frames apart (enough for an
- * IntersectionObserver callback and a React commit to land between samples).
+ * Wait until the reader is idle: no jump being positioned (aria-busy), no chapter downloads in
+ * flight (data-loading) and the mounted window unchanged over three samples, each two animation
+ * frames apart (enough for an IntersectionObserver callback and a React commit to land between).
  */
 async function settle(page: Page) {
   let prev = "";
@@ -79,13 +79,14 @@ async function settle(page: Page) {
           requestAnimationFrame(() =>
             requestAnimationFrame(() => {
               const m = document.getElementById("reading");
+              const loads = m?.dataset.loading;
               const mountedNow = Array.from(document.querySelectorAll<HTMLElement>("section.chapter"), (x) => x.dataset.chapter).join(",");
-              done(`${m?.getAttribute("aria-busy")}|${m?.dataset.window}|${mountedNow}`);
+              done(`${m?.getAttribute("aria-busy")}|${loads}|${m?.dataset.window}|${mountedNow}`);
             }),
           ),
         ),
     );
-    same = s === prev && s.startsWith("false|") ? same + 1 : 0;
+    same = s === prev && s.startsWith("false|0|") ? same + 1 : 0;
     if (same >= 2) return;
     prev = s;
   }
@@ -315,4 +316,44 @@ test("notes jump into an unloaded chapter, and highlights survive their chapter 
   expect(await maxMounted(page)).toBeLessThanOrEqual(MAX);
 
   for (const id of [early, late]) await http.delete(`/api/annotations/${id}`);
+});
+
+test("footnotes in unloaded chapters cost one small request, and a dangling one is remembered", async ({ page }) => {
+  await openAt(page, LONG);
+  const far = await blockId(LONG, 5, "Paragraph 4 of chapter six");
+  expect(await mounted(page)).not.toContain(5);
+
+  // Note references as the pipeline renders them, pointing at a note in an unloaded chapter and
+  // at one that doesn't exist (a dangling reference).
+  await page.evaluate((far) => {
+    const p = document.querySelector("section.chapter p.blk-p")!;
+    for (const [fn, label] of [[far, "9"], ["0000000000", "8"]]) {
+      const a = document.createElement("a");
+      a.className = "fnref";
+      a.href = `#b-${fn}`;
+      a.dataset.fn = fn;
+      a.textContent = label;
+      a.setAttribute("aria-label", `Footnote ${label}`);
+      p.appendChild(a);
+    }
+  }, far);
+  const requests: string[] = [];
+  page.on("request", (r) => {
+    const u = new URL(r.url()).pathname;
+    if (u.includes("/blocks/") || u.includes("/chapters/")) requests.push(u);
+  });
+
+  // A note in chapter six: one block request, no chapter downloads.
+  await page.getByRole("link", { name: "Footnote 9" }).click();
+  await expect(page.getByRole("dialog", { name: "Footnote" })).toContainText("Paragraph 4 of chapter six.");
+  expect(requests).toEqual([expect.stringContaining(`/blocks/${far}`)]);
+  await page.getByRole("dialog", { name: "Footnote" }).getByRole("button", { name: "Close" }).click();
+
+  // A dangling reference: a single 404, then nothing on later clicks.
+  await page.getByRole("link", { name: "Footnote 8" }).click();
+  await expect(page.locator(".toast", { hasText: "Couldn't find that note." }).first()).toBeVisible();
+  await page.getByRole("link", { name: "Footnote 8" }).click();
+  await page.getByRole("link", { name: "Footnote 9" }).click();
+  await expect(page.getByRole("dialog", { name: "Footnote" })).toBeVisible();
+  expect(requests).toEqual([expect.stringContaining(`/blocks/${far}`), expect.stringContaining("/blocks/0000000000")]);
 });
