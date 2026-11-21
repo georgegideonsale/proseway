@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- **Secure phone sharing (HTTPS), on by default:**
+  - a name-constrained local certificate authority for each LAN address, which can only vouch for that one IP;
+  - a plain-HTTP setup page with the certificate and iPhone and Android instructions;
+  - `proseway --new-phone-certificate` to replace it.
+  - Plain HTTP stays available as an explicit choice.
+- **EPUB language:** `dc:language` and `xml:lang` come from the PDF's declared language, or `und` when it has none.
+
+### Changed
+- **Pairing cookies:** separate for each scheme. `__Host-pw_device` over HTTPS, with its own token hash, so a token issued over HTTP doesn't work over HTTPS.
+- **Unpairing a phone:** it now clears that phone's offline copies (`Clear-Site-Data`, and the service worker drops its caches on a 401). Book images are fetched network-first.
+- **Sharing dialog:** focus moves to each step's heading, and labels are visually hidden instead of using `aria-label` on code elements.
+- **e2e tests:** each test server gets its own OS-assigned port.
+
+### Fixed
+- **Request size limits** now apply to bodies as they stream in, including chunked uploads without `Content-Length`.
+
+### Security
+- **CA:** never silently replaced; a damaged or expiring CA is reported as an error. Keys are owner-only on POSIX and Windows.
+- **TLS:** ciphers are pinned to ECDHE with AES-GCM or ChaCha20.
+- **Setup page:** reads small request bodies before answering, so clients get a clean 405 or 413.
+
 ## [0.1.0] - 2026-11-21
 
 First release.

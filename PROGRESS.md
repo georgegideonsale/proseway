@@ -6,6 +6,62 @@ Statuses in this file:
 - **Working**: I ran it and saw it work, and say how.
 - **Untested**: built but not exercised end to end.
 
+## Since v0.1.0 (on main, unreleased)
+
+v0.2 work is done on separate branches, one per task. Each one is reviewed (code review, plus the full test suite on its own worktree) and merged only after you approve it. The worker's detailed notes for each branch are in `docs/progress/`.
+
+### Merged: HTTPS phone sharing and server hardening (`claude/https-sharing-4902f2`, details in `docs/progress/https-sharing.md`)
+
+**What it adds:**
+- **Secure phone sharing (HTTPS) is the default.** Proseway makes one local certificate authority (CA) for each LAN address the computer has.
+  - The CA is name-constrained: it can only vouch for that one IP, with no DNS names, email addresses or URIs.
+  - It signs a server certificate for that address only.
+  - A separate plain-HTTP setup page, on port+1, serves the CA and step-by-step instructions for iPhone and Android.
+  - Plain HTTP stays available as an explicit, remembered choice.
+- **Pairing cookies are separate for each scheme.** Over HTTPS the cookie is `__Host-pw_device`, with its own token hash, so a token issued over plain HTTP is refused over HTTPS, and the other way round.
+- **Cleanup when a phone is unpaired:**
+  - The "not paired" 401 sends `Clear-Site-Data`.
+  - The service worker and the page delete their caches on a 401.
+  - Book images are fetched network-first.
+- **CA safety:**
+  - A CA is never silently replaced; a damaged or expiring one is an error that points to `proseway --new-phone-certificate`.
+  - Keys get owner-only permissions on POSIX, and a protected access list (you plus SYSTEM) on Windows.
+  - TLS ciphers are pinned to ECDHE with AES-GCM or ChaCha20.
+- **Size limits are now enforced on request bodies while they stream in**, including chunked uploads without `Content-Length`. This closes the v0.1 open issue.
+- **The EPUB language** (`dc:language` and `xml:lang`) comes from the PDF's `/Lang`, read with pdfminer. It is `und` if the PDF has none; Proseway never guesses from the text.
+- **Sharing dialog accessibility:** focus moves to the heading of each step, the fingerprint and code have visually hidden labels, and the hint is read once.
+- **Test harness:** each e2e server gets its own OS-assigned port, so test runs in different worktrees can't drive each other's servers. Before this fix, they could and did.
+
+**Working (verified by running it):**
+- **pytest:** 75 passed, 1 skipped (a POSIX-permissions test, skipped on Windows), on the branch and again on main after the merge. The tests run against a real uvicorn TLS listener and check:
+  - OpenSSL and cryptography both reject certificates forged with the CA key for another IP (router, public address) or with an extra email, URI or DNS name;
+  - the exact `__Host-` cookie attributes;
+  - scheme separation;
+  - wrong Host (421), missing CSRF header, foreign Origin, and phone-only 403s over TLS;
+  - only ECDHE AEAD suites are accepted;
+  - the Windows access list is read back;
+  - body limits on declared and chunked bodies;
+  - export never touches pdfium.
+- **Lint and unit tests:** ruff clean; vitest 11 passed.
+- **Playwright on main after the merge:** desktop 9/9; phone 8 passed and 1 skipped (a desktop-only test, skipped by design).
+- **On this machine,** Chromium and Python launches crash intermittently (0xC0000005) under memory pressure. Several runs had to be repeated for that reason; none of the repeats failed an assertion.
+
+**Untested (needs a real phone):**
+- installing the CA on iOS and Android, and each platform enforcing the name constraints;
+- installing the app on the phone and reading offline;
+- whether unpairing really clears a phone's offline data (iOS Safari's support for `Clear-Site-Data` is unverified);
+- how each platform displays the fingerprint;
+- the Windows Firewall prompt for the setup port.
+
+**Open:**
+- If the computer's address changes, phones have to trust a new CA. Each CA works for one address only.
+- The plain-HTTP setup page is trust-on-first-use. If someone on the network tampers with it, the attacker's CA would have no constraints. SECURITY.md says so and recommends sending the certificate straight from the computer.
+
+### Still in review
+
+- **Reader: bounded chapter window** (`claude/reader-chapter-window-39d481`).
+- **Pipeline: figures, tables without ruling lines, OCR headers** (`claude/pipeline-quality-50d649`). An independently built alternative, kept as `keep/pipeline-quality-7fe68e`, was reviewed and not chosen.
+
 ## Summary
 
 Proseway is a local Python server with a React reader. It converts a book PDF into a reflowable edition, keeps the original page number on every block, and lets you highlight, annotate and bookmark. You can read on a phone over your home Wi-Fi after pairing, or export an EPUB. Your notes can be exported as Markdown or as a JSON backup that can be restored. It has no accounts, no cloud and no telemetry.
@@ -119,8 +175,8 @@ A separate reviewer agent, which hadn't seen the build process, reviewed the cod
 ### Not fixed tonight (logged here)
 
 - **The reader never unloads chapters.** Reading straight through a 1,000-page book keeps every chapter mounted. `content-visibility` keeps rendering cheap, but memory grows on phones. Next step: a window of about 3 chapters.
-- **Uploads without `Content-Length` skip the early size check.** They're still limited when the file is saved, but Starlette writes them to a temp file first.
-- **EPUB `dc:language`** is always `en`.
+- ~~**Uploads without `Content-Length` skip the early size check.**~~ Fixed since v0.1.0: limits are enforced on bodies while they stream in.
+- ~~**EPUB `dc:language`** is always `en`.~~ Fixed since v0.1.0: it comes from the PDF's `/Lang`, or is `und`.
 - **Fonts:** whether Fontsource's range-split font files count as "modified" under the OFL for the two fonts with Reserved Font Names (Source Serif 4, OpenDyslexic) is unsettled. See `docs/research/licenses.md`.
 
 ## Known issues
@@ -129,7 +185,7 @@ A separate reviewer agent, which hadn't seen the build process, reviewed the cod
 2. **Tables without ruling lines** aren't detected as tables. Their cells come out as short paragraphs.
 3. **OCR quality** on old scans is moderate. The OCR'd heading sizes are estimates, so some OCR lines are classed as headings.
 4. **The table of contents** comes from the PDF outline when there is one, and otherwise from the detected headings. Books with neither get "Pages X–Y" chunks.
-5. **Phone sharing uses plain HTTP**, documented in SECURITY.md. HTTPS is the top roadmap item, and it would also enable an offline PWA on phones.
+5. **Phone sharing over HTTPS** is now the default (since v0.1.0, see above), with plain HTTP as an explicit fallback. It hasn't been tried with a real phone yet.
 6. **GitHub private vulnerability reporting** can only be enabled once the repo is public. SECURITY.md already points to it. Enable it with `gh api -X PUT repos/georgegideonsale/proseway/private-vulnerability-reporting` after publishing.
 7. **The GitHub username** shown by `gh auth status` was `george-gideon-S`, but the account's actual login is `georgegideonsale`, so the repo and all links use `georgegideonsale`.
 
@@ -168,7 +224,7 @@ Six vetted skills are pinned in `.claude/skills/`, each with an `UPSTREAM` file:
    - enable private vulnerability reporting;
    - push the `v0.1.0` tag, which triggers the release job that attaches the wheel;
    - optionally publish to PyPI so the install becomes `uv tool install proseway`.
-2. HTTPS for phone sharing, giving a trusted local certificate and an offline PWA on the phone.
+2. HTTPS for phone sharing is built (see "Since v0.1.0"). Next: try it with a real iPhone and Android phone, covering certificate install, name-constraint enforcement, and installing the app for offline reading.
 3. Pipeline: treat text inside figure regions as part of the figure; detect tables without ruling lines; adapt header detection for OCR'd pages.
 4. A side-by-side "original page" view, to check conversions and look at complex figures.
 5. Test with screen readers (NVDA, VoiceOver), and open the EPUB export in KOReader and Apple Books.
