@@ -32,3 +32,38 @@ Ship (a) and (c) now, and leave (b) as a documented option for later.
 
 - On an untrusted shared network, plain HTTP can be sniffed. The UI says to use this on a trusted home network, and SECURITY.md describes the risk.
 - The phone needs the computer to be on. Offline phone reading is EPUB, for now.
+
+## Update (v0.2): optional HTTPS, which makes (b) possible
+
+- Status: accepted
+- Date: 2026-11-21
+
+### Decision
+
+Sharing can run over HTTPS ("Secure connection (recommended)", ticked by default in the dialog). Plain HTTP stays available as an opt-in fallback.
+
+- **Certificates.** Proseway makes a local CA (ECDSA P-256, 10 years) and, for the chosen LAN address, a server certificate signed by it (SAN = that IP only, 397 days, renewed automatically within 30 days of expiry or when the address changes). Both live in `<data dir>/certs`, private keys owner-only. A new address reuses the same CA, so phones don't need to trust anything again. Code: `src/proseway/certs.py`.
+- **The CA is name-constrained** (critical extension): it may only vouch for private and loopback IPv4 ranges and for no DNS names (permitted DNS subtree: the reserved `invalid` domain). A stolen CA key can't be used against a phone to impersonate real websites. The server certificate's CN is deliberately not the IP, because verifiers treat a hostname-like CN as a DNS name and the constraints would reject it.
+- **Trusting the CA once per phone.** While secure sharing is on, a second plain-HTTP listener on the next port serves only an instructions page and `proseway-ca.crt` (DER). The desktop dialog shows a QR code for it and the CA's SHA-256 fingerprint, and the computer can also download the certificate (`/api/sharing/ca.crt`, local only) to send it another way.
+- **Cookie:** `Secure` over HTTPS (already the rule; now it applies).
+- **Service worker:** registers whenever `isSecureContext` is true, which on a phone now means "secure sharing with the CA trusted". No separate switch.
+- **Replacing the CA:** `proseway --new-phone-certificate`.
+
+### Alternatives considered
+
+- **A self-signed server certificate that the phone trusts directly.** Simpler, but it must be re-trusted whenever the LAN address changes, and a self-signed *leaf* can't carry name constraints, so a leaked key would be unconstrained.
+- **mkcert-style unconstrained CA.** Same user steps, much worse failure mode.
+- **Public certificates via a DNS name (e.g. a wildcard for `*.local-ip` services) or ACME.** Needs an outside service and internet access, which contradicts "nothing leaves your computer".
+- **Serving the CA over the HTTPS listener itself.** The phone would have to click through a certificate warning first, which teaches the wrong habit and protects nothing extra.
+
+### Consequences
+
+- The user has a real one-time step on each phone (iOS: install a profile, then enable full trust; Android: install a CA certificate from settings). We say so plainly in the dialog, the setup page and the README.
+- The setup page is plain HTTP, so an attacker actively on the network at that moment could swap the certificate. The fingerprint check and the "download on the computer" path are the mitigations; SECURITY.md describes the risk.
+- A phone paired over HTTPS holds a `Secure` cookie, which it won't send over plain HTTP. Switching a phone back to plain-HTTP sharing means pairing again.
+- No HSTS: the listener is an IP address that may later serve plain HTTP, and HSTS would lock the phone out.
+- Unverified until tried on real phones: iOS/Android certificate install flows, name-constraint enforcement on each platform, PWA install and offline reading over the LAN. See `docs/progress/https-sharing.md`.
+
+### Also in v0.2 (server hardening)
+
+- Request body limits now hold for bodies without a `Content-Length` (chunked): a pure ASGI middleware counts bytes as they arrive and answers 413 at the limit, before a multipart parser spools the rest. Paired phones are capped at 1 MB per request.
