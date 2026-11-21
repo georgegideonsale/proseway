@@ -35,7 +35,11 @@ export function TocPanel({ manifest, currentChapter, currentSeq, onJump, onClose
     return idx;
   }, [manifest, currentChapter]);
   const activeRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => activeRef.current?.scrollIntoView({ block: "center" }), []);
+  // Braces matter: newer Chromium returns a Promise from scrollIntoView, and React would call
+  // whatever an effect returns as its cleanup when the panel closes.
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: "center" });
+  }, []);
 
   return (
     <Sheet title="Contents" onClose={onClose}>
