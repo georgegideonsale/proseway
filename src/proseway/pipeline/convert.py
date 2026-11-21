@@ -99,6 +99,15 @@ def run_conversion(db_path: str, data_root: str, book_id: str, skip_pages: list[
         finally:
             src.close()
 
+        # No usable title in the PDF metadata: use the first prominent heading on page 1-2.
+        with db.connect() as c:
+            current = c.execute("SELECT title FROM books WHERE id=?", (book_id,)).fetchone()["title"]
+        if current.endswith(".pdf"):
+            first = next((r for r in rows if r["type"] == "heading" and r["page"] <= 2
+                          and 4 <= len(r["text"]) <= 200), None)
+            if first is not None:
+                _update(db, book_id, title=" ".join(first["text"].split())[:300])
+
         _store(db, book_id, rows, result)
         _update(db, book_id, status="ready", pipeline_version=PIPELINE_VERSION, pages_done=n_pages,
                 word_count=result["stats"]["words"], toc_json=json.dumps(result["toc"], ensure_ascii=False),

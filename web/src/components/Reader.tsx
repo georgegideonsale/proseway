@@ -520,6 +520,7 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return; // a panel, dialog or popover already handled it
       const t = e.target as HTMLElement;
       if (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
       if (e.metaKey || e.ctrlKey || e.altKey) {
@@ -538,6 +539,15 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
       } else if (k === "n") setPanel((p) => (p === "notes" ? null : "notes"));
       else if (k === "a") setPanel((p) => (p === "appearance" ? null : "appearance"));
       else if (k === "b") toggleBookmark();
+      else if (k === "h" && pos) {
+        // Keyboard-first highlighting: the paragraph at the top of the screen.
+        const info = blockIndex.get(pos.blockId);
+        const b = info?.block;
+        if (b && b.text && ["paragraph", "list_item", "heading", "caption", "footnote"].includes(b.type)) {
+          const already = (marksByBlock.get(b.id) ?? []).some((m) => m.start === 0 && m.end === b.text.length);
+          if (!already) createHighlight([{ blockId: b.id, start: 0, end: b.text.length }], "yellow").then(() => toast(`Highlighted the passage on p. ${b.page}.`));
+        }
+      }
       else if (k === "escape") {
         if (panel) setPanel(null);
         else navigate("/");

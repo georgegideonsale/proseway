@@ -111,7 +111,8 @@
   transition: padding-right var(--t-slow) var(--ease-out);
 }
 @media (min-width: 1100px) {
-  .panel-open .page {
+  .panel-open .page,
+  .panel-open .statusbar {
     padding-right: calc(var(--panel-w) + var(--s-5));
   }
 }
@@ -637,7 +638,7 @@ mark.hl.has-note {
 .sheet {
   position: fixed;
   z-index: 40;
-  top: 0;
+  top: calc(var(--topbar-h) + env(safe-area-inset-top));
   right: 0;
   bottom: 0;
   width: var(--panel-w);
@@ -648,7 +649,11 @@ mark.hl.has-note {
   border-left: 1px solid var(--rule);
   box-shadow: -12px 0 40px -20px rgba(0, 0, 0, 0.25);
   animation: sheet-in var(--t-slow) var(--ease-out);
-  padding-top: env(safe-area-inset-top);
+}
+/* While a panel is docked, keep the toolbar in view so the panel buttons stay reachable. */
+.panel-open .topbar {
+  transform: none;
+  opacity: 1;
 }
 @keyframes sheet-in {
   from {

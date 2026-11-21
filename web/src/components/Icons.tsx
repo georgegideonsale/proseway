@@ -91,6 +91,12 @@ export const IconSettings = (p: P) => (
     <path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6" />
   </svg>
 );
+export const IconArchive = (p: P) => (
+  <svg {...base} {...p}>
+    <rect x="3.5" y="4.5" width="17" height="4.5" rx="1" />
+    <path d="M5 9v9.5A1.5 1.5 0 006.5 20h11a1.5 1.5 0 001.5-1.5V9M10 13h4" />
+  </svg>
+);
 export const IconUpload = (p: P) => (
   <svg {...base} {...p}>
     <path d="M12 16V4M7 9l5-5 5 5" />

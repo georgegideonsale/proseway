@@ -5,7 +5,7 @@ import { navigate } from "../lib/router";
 import { useToast } from "../lib/toast";
 import type { Book } from "../types";
 import { Dialog } from "./Dialog";
-import { IconMore, IconPhone, IconPlus, IconSettings, IconUpload } from "./Icons";
+import { IconArchive, IconMore, IconPhone, IconPlus, IconUpload } from "./Icons";
 import { Menu } from "./Menu";
 import { SharingDialog } from "./SharingDialog";
 
@@ -36,6 +36,13 @@ export function Library({ session }: { session: Session }) {
 
   useEffect(() => {
     refresh();
+    const onVisible = () => document.visibilityState === "visible" && refresh();
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refresh]);
 
   const anyActive = books?.some((b) => ACTIVE.has(b.status)) ?? false;
@@ -133,7 +140,7 @@ export function Library({ session }: { session: Session }) {
               </button>
               <Menu
                 label="Library options"
-                trigger={<IconSettings />}
+                trigger={<IconArchive />}
                 items={[
                   { label: "Download a backup of all notes", run: () => (location.href = "/api/backup.json") },
                   { label: "Restore from a backup…", run: () => restoreInput.current?.click() },
@@ -384,7 +391,11 @@ function BookCard(props: {
         </div>
         <p className={`book-status ${b.status === "error" ? "is-error" : ""}`} aria-live={active ? "polite" : undefined}>
           {statusLine(b)}
-          {ready && (b.highlights ?? 0) > 0 && <span className="book-count">{b.highlights} highlights</span>}
+          {ready && (b.highlights ?? 0) > 0 && (
+            <span className="book-count">
+              {b.highlights} {b.highlights === 1 ? "highlight" : "highlights"}
+            </span>
+          )}
         </p>
         {local && active && (
           <button className="link-btn" onClick={props.onCancel}>
