@@ -208,9 +208,10 @@ def _fuzzy_running(key: str, zone: str, p: int, zones: list[list[tuple[int, str,
 # ---------------------------------------------------------------------------
 
 
-def order_page(lines: list[Line], page_w: float) -> list[Line]:
+def classify_columns(lines: list[Line]) -> bool:
+    """Mark each line left / right / full and say whether the page is set in two columns."""
     if not lines:
-        return lines
+        return False
     left_edge = min(ln.x0 for ln in lines)
     right_edge = max(ln.x1 for ln in lines)
     width = max(right_edge - left_edge, 1.0)
@@ -226,11 +227,20 @@ def order_page(lines: list[Line], page_w: float) -> list[Line]:
     n_left = sum(1 for ln in lines if ln.col == "left")
     n_right = sum(1 for ln in lines if ln.col == "right")
     right_starts = [round(ln.x0) for ln in lines if ln.col == "right"]
-    two_col = (
+    return bool(
         n_left >= 5 and n_right >= 5
         and right_starts
         and Counter(right_starts).most_common(1)[0][1] >= max(3, n_right * 0.3)
     )
+
+
+def order_page(lines: list[Line], page_w: float) -> list[Line]:
+    if not lines:
+        return lines
+    left_edge = min(ln.x0 for ln in lines)
+    right_edge = max(ln.x1 for ln in lines)
+    mid = (left_edge + right_edge) / 2
+    two_col = classify_columns(lines)
     if not two_col:
         for ln in lines:
             ln.col = "full"
@@ -290,6 +300,187 @@ def _merge_same_baseline(lines: list[Line]) -> list[Line]:
         else:
             out.append(ln)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Tables without ruling lines
+# ---------------------------------------------------------------------------
+
+EQ_NUMBER = re.compile(r"^\(\s*[\dA-Z]{1,4}(?:\.\d{1,3})?[a-z]?\s*\)$")
+LIST_MARK = re.compile(r"^(?:[•◦▪▫‣⁃●○■□\-–—*]|\(?\d{1,3}[.)]|\(?[a-zA-Z][.)]|\(?[ivxIVX]{1,5}[.)])$")
+
+
+def _center_in(ln: Line, bbox) -> bool:
+    x0, top, x1, bot = bbox
+    return x0 - 2 <= (ln.x0 + ln.x1) / 2 <= x1 + 2 and top - 2 <= (ln.top + ln.bot) / 2 <= bot + 2
+
+
+def _visual_rows(lines: list[Line]) -> list[list[Line]]:
+    """Group lines that share a row (vertical overlap of their centres), left to right."""
+    rows: list[list[Line]] = []
+    for ln in sorted(lines, key=lambda ln: (ln.top, ln.x0)):
+        c = (ln.top + ln.bot) / 2
+        for row in reversed(rows[-3:]):
+            top = min(r.top for r in row)
+            bot = max(r.bot for r in row)
+            rc = (top + bot) / 2
+            if top - 0.5 <= c <= bot + 0.5 or ln.top - 0.5 <= rc <= ln.bot + 0.5:
+                row.append(ln)
+                break
+        else:
+            rows.append([ln])
+    return [sorted(r, key=lambda ln: ln.x0) for r in rows]
+
+
+def _row_cells_ok(row: list[Line]) -> bool:
+    return len(row) >= 2 and all(b.x0 - a.x1 > 0.6 * min(a.size, b.size) for a, b in zip(row, row[1:], strict=False))
+
+
+def _grid_runs(rows: list[list[Line]]) -> list[list[list[Line]]]:
+    """Runs of consecutive rows that could be one table: multi-cell rows, with at most two
+    narrow single-cell rows (group labels, wrapped cells) between them."""
+    runs: list[list[list[Line]]] = []
+    cur: list[list[Line]] = []
+    singles: list[list[Line]] = []
+    for row in rows:
+        size = statistics.median(ln.size for ln in row)
+        if cur:
+            prev_bot = max(ln.bot for ln in (singles[-1] if singles else cur[-1]))
+            if min(ln.top for ln in row) - prev_bot > 2.2 * size:
+                runs.append(cur)
+                cur, singles = [], []
+        if _row_cells_ok(row):
+            cur.extend(singles)
+            singles = []
+            cur.append(row)
+        elif cur and len(row) == 1 and len(singles) < 2:
+            run_w = max(ln.x1 for r in cur for ln in r) - min(ln.x0 for r in cur for ln in r)
+            if row[0].width <= 0.6 * run_w:
+                singles.append(row)
+            else:
+                runs.append(cur)
+                cur, singles = [], []
+        else:
+            if cur:
+                runs.append(cur)
+            cur, singles = [], []
+    if cur:
+        runs.append(cur)
+    return runs
+
+
+def _bands(rows: list[list[Line]]) -> list[tuple[float, float]]:
+    """Column bands: x ranges covered by cells on a good share of the rows."""
+    cover: Counter = Counter()
+    multi = [r for r in rows if len(r) >= 2]
+    for row in multi:
+        bins: set[int] = set()
+        for ln in row:
+            bins.update(range(int(ln.x0), int(ln.x1) + 1))
+        for b in bins:
+            cover[b] += 1
+    need = max(2, 0.25 * len(multi))
+    bands: list[tuple[float, float]] = []
+    start = prev = None
+    for b in sorted(x for x, n in cover.items() if n >= need):
+        if prev is not None and b == prev + 1:
+            prev = b
+            continue
+        if start is not None:
+            bands.append((start, prev + 1))
+        start = prev = b
+    if start is not None:
+        bands.append((start, prev + 1))
+    return bands
+
+
+def _band_of(ln: Line, bands: list[tuple[float, float]]) -> int:
+    for k, (a, b) in enumerate(bands):
+        if a - 1 <= ln.x0 <= b:
+            return k
+    # Right-aligned or centred cells may start left of their band: take the largest overlap.
+    best, best_ov = 0, -1.0
+    for k, (a, b) in enumerate(bands):
+        ov = min(b, ln.x1) - max(a, ln.x0)
+        if ov > best_ov:
+            best, best_ov = k, ov
+    return best
+
+
+def _is_table(run: list[list[Line]]) -> list[tuple[float, float]] | None:
+    """Return the column bands if this run of rows is a table, else None. Deliberately strict:
+    two-column prose, lists and numbered equations must stay what they are."""
+    multi = [r for r in run if len(r) >= 2]
+    if len(multi) < 3:
+        return None
+    bands = _bands(run)
+    if len(bands) < 2:
+        return None
+    consistent = 0
+    for row in multi:
+        ks = [_band_of(ln, bands) for ln in row]
+        if len(set(ks)) == len(ks):
+            consistent += 1
+    if consistent < 0.8 * len(multi):
+        return None
+    cells = [ln for r in run for ln in r]
+    words = [len(ln.text.split()) for ln in cells]
+    if sum(words) / len(words) > 5:
+        return None  # sentences, not cells
+    by_band: dict[int, list[Line]] = defaultdict(list)
+    for ln in cells:
+        by_band[_band_of(ln, bands)].append(ln)
+    for k in by_band:
+        if statistics.median(len(ln.text.split()) for ln in by_band[k]) > 6:
+            return None
+    first, last = by_band.get(0, []), by_band.get(len(bands) - 1, [])
+    if len(bands) == 2 and first and all(LIST_MARK.match(ln.text.strip()) for ln in first):
+        return None  # a list with its markers set apart
+    if last and all(EQ_NUMBER.match(ln.text.strip()) for ln in last):
+        return None  # numbered equations
+    if len(bands) == 2 and len(multi) < 4 and sum(words) / len(words) > 3:
+        return None  # two short columns of words over three rows: too little evidence
+    table_w = max(ln.x1 for ln in cells) - min(ln.x0 for ln in cells)
+    widths = [statistics.median(ln.width for ln in by_band[k]) for k in by_band]
+    if len(bands) == 2 and max(widths) > 0.42 * table_w:
+        return None  # two columns of running text
+    return bands
+
+
+def find_text_tables(lines: list[Line], two_col: bool = False) -> tuple[list[dict], list[Line]]:
+    """Detect tables drawn without ruling lines: text aligned in columns over 3+ rows.
+
+    Returns (tables as {"bbox", "rows"}, the lines that are not part of a table). Every line
+    inside a detected table's box becomes a cell, so no text is lost."""
+    tables: list[dict] = []
+    remaining = list(lines)
+    groups = [remaining]
+    if two_col:
+        groups.append([ln for ln in remaining if ln.col == "left"])
+        groups.append([ln for ln in remaining if ln.col == "right"])
+    for group in groups:
+        group = [ln for ln in group if any(ln is r for r in remaining)]
+        for run in _grid_runs(_visual_rows(group)):
+            bands = _is_table(run)
+            if bands is None:
+                continue
+            cells = [ln for r in run for ln in r]
+            bbox = [min(ln.x0 for ln in cells), min(ln.top for ln in cells),
+                    max(ln.x1 for ln in cells), max(ln.bot for ln in cells)]
+            members = [ln for ln in remaining
+                       if bbox[0] - 1 <= (ln.x0 + ln.x1) / 2 <= bbox[2] + 1
+                       and bbox[1] - 1 <= (ln.top + ln.bot) / 2 <= bbox[3] + 1]
+            rows: list[list[str]] = []
+            for vr in _visual_rows(members):
+                cellv = [""] * len(bands)
+                for ln in vr:
+                    k = _band_of(ln, bands)
+                    cellv[k] = (cellv[k] + " " + ln.text.strip()).strip()
+                rows.append(cellv)
+            ids = {id(ln) for ln in members}
+            remaining = [ln for ln in remaining if id(ln) not in ids]
+            tables.append({"bbox": bbox, "rows": rows, "ruled": False})
+    return tables, remaining
 
 
 # ---------------------------------------------------------------------------
@@ -442,16 +633,17 @@ class Assembler:
         body = self.stats.body_size
 
         # Tables: remove lines inside table areas, insert table blocks in reading order.
-        table_blocks: list[tuple[float, str, Block]] = []
+        table_blocks: list[tuple[float, tuple[float, float], Block]] = []
         for t in tables:
             x0, top, x1, bot = t["bbox"]
-            inside = [ln for ln in lines if x0 - 2 <= (ln.x0 + ln.x1) / 2 <= x1 + 2 and top - 2 <= (ln.top + ln.bot) / 2 <= bot + 2]
-            if not inside:
+            inside = [ln for ln in lines if _center_in(ln, t["bbox"])]
+            # Tables found from aligned text have already taken their lines out of the flow.
+            if not inside and t.get("ruled", True):
                 continue
             ids = {id(ln) for ln in inside}
             lines = [ln for ln in lines if id(ln) not in ids]
             text = "\n".join(" | ".join(cell.replace("\n", " ") for cell in row) for row in t["rows"])
-            table_blocks.append((top, "full", Block(type="table", page=page_no, text=text, data={"rows": t["rows"]})))
+            table_blocks.append((top, (x0, x1), Block(type="table", page=page_no, text=text, data={"rows": t["rows"]})))
 
         # Footnote region: small lines at the bottom of the page.
         foot_start = len(lines)
@@ -470,14 +662,32 @@ class Assembler:
             foot_start = len(lines)
         main = lines[:foot_start]
 
-        # Inline figures in reading order by their top edge.
-        visuals: list[tuple[float, Block]] = []
+        # Inline figures and tables in reading order: before the first line of their own column
+        # (on two-column pages) that starts below their top edge.
+        visuals: list[tuple[float, str, Block]] = []
+        left = [ln for ln in main if ln.col == "left"]
+        right = [ln for ln in main if ln.col == "right"]
+        split = (max(ln.x1 for ln in left) + min(ln.x0 for ln in right)) / 2 if left and right else None
+
+        def column_of(x0: float, x1: float) -> str:
+            if split is None:
+                return "full"
+            if x1 <= split + 4:
+                return "left"
+            if x0 >= split - 4:
+                return "right"
+            return "full"
+
         for im in images:
             btype = "page_image" if im.get("scan") else "figure"
-            visuals.append((im["top"], Block(type=btype, page=page_no, data={
-                "src": im["file"], "w": round(im["x1"] - im["x0"]), "h": round(im["bot"] - im["top"])})))
-        for top, _col, tb in table_blocks:
-            visuals.append((top, tb))
+            data: dict[str, Any] = {"src": im.get("file"), "w": round(im["x1"] - im["x0"]),
+                                    "h": round(im["bot"] - im["top"])}
+            if im.get("text"):
+                # Labels and annotations drawn inside the figure: kept for search and alt text.
+                data["figure_text"] = im["text"]
+            visuals.append((im["top"], column_of(im["x0"], im["x1"]), Block(type=btype, page=page_no, data=data)))
+        for top, (tx0, tx1), tb in table_blocks:
+            visuals.append((top, column_of(tx0, tx1), tb))
         visuals.sort(key=lambda v: v[0])
 
         gaps = [b.top - a.bot for a, b in zip(main, main[1:], strict=False)
@@ -485,11 +695,17 @@ class Assembler:
         gap_ref = statistics.median(gaps) if gaps else body * 0.3
 
         prev: Line | None = self.open.lines[-1] if self.open is not None and self.open.lines else None
-        vi = 0
+        all_visuals = list(visuals)
         for idx, ln in enumerate(main):
-            while vi < len(visuals) and visuals[vi][0] <= ln.top:
-                self.emit(visuals[vi][1])
-                vi += 1
+            due = [v for v in visuals if v[0] <= ln.top and (v[1] == "full" or ln.col in ("full", v[1]))]
+            if ln.col == "right":
+                # The left column of this band is finished: figures at its foot come first.
+                band_end = min((x.top for x in main[idx:] if x.col == "full"), default=float("inf"))
+                due += [v for v in visuals if v[1] == "left" and v[0] < band_end and v not in due]
+                due.sort(key=lambda v: v[0])
+            for v in due:
+                self.emit(v[2])
+                visuals.remove(v)
                 prev = None
             nxt = main[idx + 1] if idx + 1 < len(main) else None
             text = ln.text.strip()
@@ -525,7 +741,7 @@ class Assembler:
                 else:
                     self.close()
                     self.open = Block(type="equation", page=ln.page, text=ln.text, lines=[ln])
-            elif CAPTION.match(text) and (ln.size < body * 0.98 or ln.bold or ln.italic or self._near_visual(ln, visuals)):
+            elif CAPTION.match(text) and (ln.size < body * 0.98 or ln.bold or ln.italic or self._near_visual(ln, all_visuals)):
                 self.start("caption", ln)
             elif BULLET.match(text) and (self.open is None or self.open.type != "paragraph" or prev is None
                                          or self.paragraph_break(prev, ln, gap_ref) or ln.x0 <= prev.x0 + 1):
@@ -538,7 +754,7 @@ class Assembler:
                     self.start("paragraph", ln)
             prev = ln
         # Paragraph may continue on next page; visuals after the last line go after it.
-        pending_visuals = [v[1] for v in visuals[vi:]]
+        pending_visuals = [v[2] for v in visuals]
         if pending_visuals:
             self.close()
             for b in pending_visuals:
@@ -586,7 +802,19 @@ def assemble(pages_data: list[dict], outline: list[dict] | None = None) -> dict[
     stats = compute_stats(raw_pages)
     removed: Counter = Counter()
     cleaned = remove_running_elements(raw_pages, heights, stats.body_size, removed)
-    ordered = [order_page(lines, p["w"]) for lines, p in zip(cleaned, pages_data, strict=True)]
+    ordered: list[list[Line]] = []
+    page_tables: list[list[dict]] = []
+    for lines, p in zip(cleaned, pages_data, strict=True):
+        found: list[dict] = []
+        if not p.get("ocr"):  # OCR boxes are too unevenly placed to read as a grid
+            ruled = [t["bbox"] for t in p.get("tables", [])]
+            in_ruled = [ln for ln in lines if any(_center_in(ln, b) for b in ruled)]
+            free = [ln for ln in lines if not any(_center_in(ln, b) for b in ruled)]
+            found, free = find_text_tables(free, classify_columns(free))
+            lines = free + in_ruled  # lines in ruled tables are taken out by add_page
+            removed["text_tables"] += len(found)
+        page_tables.append(list(p.get("tables", [])) + found)
+        ordered.append(order_page(lines, p["w"]))
 
     # Indentation style: share of body lines that start ~1-3 em in from their column.
     body_lines = [ln for page in ordered for ln in page if abs(ln.size - stats.body_size) < 0.6]
@@ -596,12 +824,12 @@ def assemble(pages_data: list[dict], outline: list[dict] | None = None) -> dict[
     asm = Assembler(stats)
     asm._pending_footnotes = []
     asm.removed = removed
-    for page, lines in zip(pages_data, ordered, strict=True):
+    for page, lines, tables in zip(pages_data, ordered, page_tables, strict=True):
         if page.get("failed"):
             # Never drop a page silently: leave a visible marker where it belongs.
             asm.emit(Block(type="page_image", page=page["n"], data={"failed": True}))
             continue
-        asm.add_page(page["n"], lines, page["h"], page.get("images", []), page.get("tables", []))
+        asm.add_page(page["n"], lines, page["h"], page.get("images", []), tables)
         if asm.open is None or asm.open.type != "paragraph":
             asm.flush_footnotes()
     asm.close()
