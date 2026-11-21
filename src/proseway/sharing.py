@@ -54,6 +54,7 @@ COOKIE_MAX_AGE = 180 * 24 * 3600
 # this, uvicorn's default cipher string is "TLSv1".
 TLS_CIPHERS = "ECDHE+AESGCM:ECDHE+CHACHA20"
 CA_DOWNLOAD_NAME = "proseway-ca.crt"
+SETUP_BODY_LIMIT = 64 * 1024  # the setup page takes no bodies; small ones are read and dropped
 
 
 def hash_token(token: str, https: bool = False) -> str:
@@ -278,7 +279,21 @@ class SharingManager:
             host = dict(scope.get("headers") or []).get(b"host", b"").decode("latin-1").lower()
             path, method = scope.get("path", ""), scope.get("method", "")
             status, ctype, body, extra = 404, "text/plain; charset=utf-8", b"Not found.", []
-            if host != f"{s.address}:{s.setup_port}".lower():
+            # Read (and discard) any request body before answering. Closing a connection with
+            # unread data makes Windows send a reset instead of the response, so a client that
+            # POSTs here would see a connection error rather than the 405.
+            received, more = 0, True
+            while more and received <= SETUP_BODY_LIMIT:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    return
+                received += len(message.get("body", b""))
+                more = message.get("more_body", False)
+            if received > SETUP_BODY_LIMIT:
+                # Not worth reading further; this page never takes a body.
+                status, body = 413, b"Too large."
+                extra = [(b"connection", b"close")]
+            elif host != f"{s.address}:{s.setup_port}".lower():
                 status, body = 421, b"Unexpected host."
             elif method not in ("GET", "HEAD"):
                 status, body = 405, b"Method not allowed."

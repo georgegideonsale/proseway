@@ -256,6 +256,48 @@ def test_dialog_and_setup_page_show_the_certificate_in_use(tmp_path, monkeypatch
         assert share(True)["ca"]["fingerprint"] != before
 
 
+def test_setup_page_reads_request_bodies_before_refusing(tmp_path, monkeypatch):
+    """A 405 must arrive as a 405. If the server closes with the body unread, Windows sends a
+    reset and the client sees ConnectionResetError (WinError 10054) instead."""
+    with running(tmp_path, monkeypatch) as (app, _local, share):
+        share(True)
+        setup = f"http://127.0.0.1:{app.state.port + 1}/"
+        for size in (1, 1000, 8000, 60_000) * 6 + (64 * 1024,):
+            assert request(setup, method="POST", data=b"x" * size)[0] == 405, size
+
+
+def test_setup_page_refuses_large_bodies_without_reading_them_all(tmp_path):
+    import asyncio
+
+    from proseway.db import Database
+
+    sharing = sharing_mod.SharingManager(Database(tmp_path / "db.sqlite3").init(), cert_dir=tmp_path / "certs")
+    sharing.state.address, sharing.state.setup_port = "127.0.0.1", 9
+    setup_app = sharing._setup_app()
+
+    def call(chunks: list[bytes]):
+        incoming = [{"type": "http.request", "body": c, "more_body": i < len(chunks) - 1} for i, c in enumerate(chunks)]
+        sent, reads = [], 0
+
+        async def receive():
+            nonlocal reads
+            reads += 1
+            return incoming.pop(0) if incoming else {"type": "http.disconnect"}
+
+        async def send(m):
+            sent.append(m)
+
+        scope = {"type": "http", "method": "POST", "path": "/", "headers": [(b"host", b"127.0.0.1:9")]}
+        asyncio.run(setup_app(scope, receive, send))
+        return sent[0]["status"] if sent else None, dict(sent[0]["headers"]) if sent else {}, reads
+
+    assert call([b"x" * 1000, b"y" * 1000])[0] == 405  # read to the end, then refused
+    status, headers, reads = call([b"x" * 40_000] * 100)  # 4 MB
+    assert status == 413 and headers[b"connection"] == b"close"
+    assert reads == 2  # stopped just past the 64 KB limit
+    assert call([])[0] is None  # client went away: nothing to answer
+
+
 def test_no_setup_page_above_the_last_port(tmp_path, monkeypatch):
     monkeypatch.setattr(sharing_mod, "lan_addresses", lambda: [{"interface": "test", "address": "127.0.0.1"}])
     app = create_app(AppConfig(tmp_path / "lib", 8765), start_jobs=False)

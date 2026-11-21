@@ -205,6 +205,20 @@ Fix, in `web/e2e/server.ts`:
 - Regression check: run `reading.spec.ts` while something else listens on 18765. It passed
   3/3 that way, with the other worktree's server still on the port.
 
+## Review round 4: reset on the setup page's 405
+
+The coordinator saw `test_https_listener_with_generated_ca` fail once with
+`ConnectionResetError [WinError 10054]` on `POST` to the setup page: the app answered 405
+without reading the body, and Windows resets a socket closed with unread data. The setup app
+now reads and discards request bodies up to 64 KB before answering. Beyond that it answers 413
+with `Connection: close` and stops reading.
+
+Tests:
+- 25 POSTs with bodies of 1 B to 64 KB against the real listener, all 405.
+- A direct ASGI test of the 413 path: it stops after two reads of a 4 MB body.
+- The original test looped 20 times in fresh processes: 20/20.
+- `uv run pytest`: 75 passed, 1 skipped.
+
 ## Needs a real phone (Untested)
 
 - **iOS:**
