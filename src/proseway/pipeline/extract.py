@@ -344,19 +344,63 @@ def _clean_char_text(t: str) -> str:
     return t
 
 
-def lines_from_chars(chars: list[dict]) -> list[dict]:
+def _dedupe_overprint(chars: list[dict]) -> list[dict]:
+    """Drop glyphs drawn twice in the same place (fake bold, shadows). pdfplumber's
+    dedupe_chars does this for the other engine."""
+    seen: set[tuple] = set()
+    out: list[dict] = []
     for c in chars:
+        if c["text"].strip() and c["x1"] > c["x0"]:
+            key = (c["text"], round(c["x0"]), round(c["top"]))
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(c)
+    return out
+
+
+def _untangle(seg: list[dict]) -> list[list[dict]]:
+    """Separate text runs that were drawn on top of each other.
+
+    Overlapping labels in figures put two strings on the same row; sorted by x their letters
+    interleave ("SOeuetdp utatsks"). When glyphs overlap heavily, split the segment back into
+    runs following the order the PDF drew them in, which is the order of each string."""
+    vis = [c for c in seg if c["text"].strip() and c["x1"] > c["x0"]]
+    if len(vis) < 4:
+        return [seg]
+    overlaps = sum(
+        1 for a, b in zip(vis, vis[1:], strict=False)
+        if a["x1"] - b["x0"] > 0.5 * min(a["x1"] - a["x0"], b["x1"] - b["x0"])
+    )
+    if overlaps < 2 or overlaps < 0.15 * len(vis):
+        return [seg]
+    runs: list[list[dict]] = []
+    for c in sorted(seg, key=lambda c: c.get("_i", 0)):
+        run = runs[-1] if runs else None
+        last = next((x for x in reversed(run) if x["text"].strip()), None) if run else None
+        if run is not None and (last is None or not c["text"].strip()
+                                or last["x0"] - 0.5 <= c["x0"] <= last["x1"] + 2.5 * max(c["size"], 1.0)):
+            run.append(c)
+        else:
+            runs.append([c])
+    return [sorted(r, key=lambda c: c["x0"]) for r in runs]
+
+
+def lines_from_chars(chars: list[dict]) -> list[dict]:
+    for k, c in enumerate(chars):
+        c["_i"] = k  # drawing order, used to untangle overlapping text
         if c.get("text"):
             c["text"] = _clean_char_text(c["text"])
-    upright = [c for c in chars if c.get("upright", True) and c.get("text")]
+    upright = _dedupe_overprint([c for c in chars if c.get("upright", True) and c.get("text")])
     lines: list[dict] = []
     rows = _rows_from_chars(upright)
     gutters = _find_gutters(rows)
     for row in rows:
         for seg in _split_segments(row, gutters):
-            line = _build_line(seg)
-            if line is not None:
-                lines.append(line)
+            for part in _untangle(seg):
+                line = _build_line(part)
+                if line is not None:
+                    lines.append(line)
     return lines
 
 

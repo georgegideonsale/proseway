@@ -203,6 +203,64 @@ def _fuzzy_running(key: str, zone: str, p: int, zones: list[list[tuple[int, str,
     return False
 
 
+# Stamps that digitisation projects put on every page of a scan. They are not the author's.
+WATERMARKS = ("digitizedbygoogle", "digitizedbytheinternetarchive", "digitizedbymicrosoft")
+
+
+def _wm_key(text: str) -> str:
+    return re.sub(r"[\W_]+", "", text.casefold())
+
+
+def remove_watermarks(pages: list[list[Line]], heights: list[float], removed: Counter) -> list[list[Line]]:
+    """Drop scan watermarks ("Digitized by Google") from the page margins, OCR misspellings
+    included ("Diglied byGogle", "Dguiea ygGoogle", or split into "zed by" + "Google").
+
+    A line in the margin that closely matches a known watermark is always dropped. Looser
+    matches and fragments are dropped only once the book has shown the watermark on several
+    pages, and only near where it usually sits."""
+    from rapidfuzz import fuzz
+
+    def margin(ln: Line, h: float) -> bool:
+        c = (ln.top + ln.bot) / 2
+        return c < h * 0.12 or c > h * 0.85
+
+    strong: dict[str, list[float]] = defaultdict(list)  # watermark -> centre y of clear matches
+    for lines, h in zip(pages, heights, strict=True):
+        for ln in lines:
+            if margin(ln, h):
+                key = _wm_key(ln.text)
+                for wm in WATERMARKS:
+                    if len(key) >= 8 and fuzz.ratio(key, wm) >= 80:
+                        strong[wm].append((ln.top + ln.bot) / 2 / h)
+    established = {wm: statistics.median(ys) for wm, ys in strong.items() if len(ys) >= 3}
+
+    out: list[list[Line]] = []
+    for lines, h in zip(pages, heights, strict=True):
+        keep: list[Line] = []
+        for ln in lines:
+            if margin(ln, h) and _is_watermark(_wm_key(ln.text), (ln.top + ln.bot) / 2 / h, established, fuzz):
+                removed["watermarks"] += 1
+                continue
+            keep.append(ln)
+        out.append(keep)
+    return out
+
+
+def _is_watermark(key: str, y: float, established: dict[str, float], fuzz) -> bool:
+    if len(key) < 3:
+        return False
+    for wm in WATERMARKS:
+        if len(key) >= 8 and fuzz.ratio(key, wm) >= 80:
+            return True
+        if wm in established and abs(y - established[wm]) < 0.05:
+            # The book carries this stamp: accept OCR-mangled versions and pieces of it.
+            if len(key) >= 8 and fuzz.ratio(key, wm) >= 65 and fuzz.ratio(key[-6:], wm[-6:]) >= 80:
+                return True
+            if len(key) >= 4 and len(key) <= len(wm) and fuzz.partial_ratio(key, wm) >= 90:
+                return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Reading order (columns)
 # ---------------------------------------------------------------------------
@@ -591,6 +649,22 @@ class Assembler:
         gap_above = (line.top - prev.bot) if prev is not None and prev.page == line.page else line.size * 2
         return gap_above > line.size * 0.6 and abs(line.size - self.stats.body_size) < 1.5
 
+    def ocr_heading_ok(self, line: Line, prev: Line | None, nxt: Line | None) -> bool:
+        """OCR type sizes are estimates from box heights and wobble from line to line, so an
+        OCR line is a heading only if it is clearly larger, short, horizontal and set apart."""
+        if line.size < self.stats.body_size * 1.5 or len(line.text) > 80:
+            return False
+        if line.width < 1.5 * (line.bot - line.top):
+            return False  # tall, narrow box: rotated or vertical text, not a big heading
+        if line.text.rstrip()[-1:] in ",;-":
+            return False
+        letters = sum(ch.isalpha() for ch in line.text)
+        if letters < 0.6 * len(line.text.replace(" ", "")):
+            return False  # shelf marks, stamps and numbers misread as large type
+        if prev is not None and prev.page == line.page and line.top - prev.bot < line.size * 0.5:
+            return False
+        return not (nxt is not None and nxt.page == line.page and nxt.top - line.bot < nxt.size * 0.4)
+
     def is_equation(self, line: Line) -> bool:
         if line.mono or len(line.text) > 140:
             return False
@@ -712,6 +786,8 @@ class Assembler:
             if not text:
                 continue
             level = self.heading_level(ln)
+            if level and ln.font == "OCR" and not self.ocr_heading_ok(ln, prev, nxt):
+                level = 0
             if level == 0 and self.is_bold_heading(ln, prev, nxt):
                 level = len(self.stats.heading_sizes) + 1 if self.stats.heading_sizes else 2
                 level = min(level, 4)
@@ -799,9 +875,11 @@ def assemble(pages_data: list[dict], outline: list[dict] | None = None) -> dict[
     pages_data = sorted(pages_data, key=lambda p: p["n"])
     raw_pages = [[_to_line(d, p["n"]) for d in p["lines"]] for p in pages_data]
     heights = [p["h"] for p in pages_data]
-    stats = compute_stats(raw_pages)
     removed: Counter = Counter()
-    cleaned = remove_running_elements(raw_pages, heights, stats.body_size, removed)
+    # Watermarks go first, so their (often large) type doesn't count as a heading size.
+    cleaned = remove_watermarks(raw_pages, heights, removed)
+    stats = compute_stats(cleaned)
+    cleaned = remove_running_elements(cleaned, heights, stats.body_size, removed)
     ordered: list[list[Line]] = []
     page_tables: list[list[dict]] = []
     for lines, p in zip(cleaned, pages_data, strict=True):
