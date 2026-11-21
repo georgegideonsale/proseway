@@ -1,0 +1,122 @@
+[
+  {
+    "id": "pride-prejudice",
+    "category": "plain novel",
+    "title": "Pride and Prejudice",
+    "author": "Jane Austen",
+    "license": "Public domain (work); PDF typeset by Planet eBook and offered as a free download",
+    "license_url": "https://www.planetebook.com/",
+    "pdf_url": "https://www.planetebook.com/free-ebooks/pride-and-prejudice.pdf",
+    "approx_pages": 479,
+    "approx_mb": 1.6,
+    "reference": {
+      "kind": "gutenberg_txt",
+      "url": "https://www.gutenberg.org/cache/epub/1342/pg1342.txt",
+      "mirror_url": "https://gutenberg.pglaf.org/cache/epub/1342/pg1342.txt"
+    },
+    "notes": "Born-digital PDF (InDesign), single column, small trim size (322x484 pt). Has running headers ('Pride and Prejudice') and footers ('Free eBooks at Planet eBook.com') on every page, which is a good test for header/footer stripping. The PDF text comes from the OLD Gutenberg #1342 transcription: `backtick' quotes and CAPS for emphasis. The current #1342 is a different transcription (1894 illustrated edition, curly quotes, _italics_, 'Chapter I.'), so the words match but punctuation, case and markup do not. Score case-folded and with punctuation normalized. Alternate reference: Gutenberg #42671 (pg42671.txt). gutenberg.org was down for maintenance (503) when this was checked; the pglaf mirror works."
+  },
+  {
+    "id": "openstax-univ-physics-1",
+    "category": "textbook with figures and tables",
+    "title": "University Physics Volume 1",
+    "author": "OpenStax (Ling, Sanny, Moebs et al.)",
+    "license": "CC BY-NC-SA 4.0 (current license per OpenStax CMS; earlier printings were CC BY 4.0)",
+    "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+    "pdf_url": "https://assets.openstax.org/oscms-prodcms/media/documents/university-physics-volume-1_-_WEB.pdf",
+    "approx_pages": 1000,
+    "approx_mb": 81.5,
+    "reference": { "kind": "none", "url": "https://openstax.org/books/university-physics-volume-1/pages/1-introduction" },
+    "notes": "Large textbook with many figures, tables, sidebars, equations and end-of-chapter problems. The reference URL is the OpenStax web HTML edition, which could be scraped for structure checks. The license is NC-SA, which is fine for internal testing with no redistribution, but use the CC BY item below if that matters. The page count is approximate because the PDF uses compressed object streams. Found through the OpenStax CMS API (openstax.org/apps/cms/api/v2/pages/?type=books.Book), which returns current asset URLs if this one moves."
+  },
+  {
+    "id": "openstax-intro-stats",
+    "category": "textbook with figures and tables",
+    "title": "Introductory Statistics",
+    "author": "OpenStax (Illowsky, Dean et al.)",
+    "license": "CC BY 4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "pdf_url": "https://assets.openstax.org/oscms-prodcms/media/documents/IntroductoryStatistics-OP_i6tAI7e.pdf",
+    "approx_pages": 900,
+    "approx_mb": 26.6,
+    "reference": { "kind": "none", "url": "https://openstax.org/books/introductory-statistics/pages/1-introduction" },
+    "notes": "Smaller and CC BY. First edition (the 2e is NC-SA). Has many data tables, charts and formulas. The page count is approximate. Other CC BY options from the same API: 'Physics' (Physics_-_WEB.pdf, 57 MB) and 'College Physics' (264 MB, too big)."
+  },
+  {
+    "id": "arxiv-self-instruct",
+    "category": "two-column academic paper",
+    "title": "Self-Instruct: Aligning Language Models with Self-Generated Instructions",
+    "author": "Yizhong Wang et al.",
+    "license": "CC BY 4.0",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/",
+    "pdf_url": "https://arxiv.org/pdf/2212.10560v2",
+    "approx_pages": 23,
+    "approx_mb": 4.3,
+    "reference": { "kind": "arxiv_source", "url": "https://arxiv.org/e-print/2212.10560v2" },
+    "notes": "ACL 2023 camera-ready, A4, two columns (checked with pdftotext -layout on page 3). It has a full-width pipeline figure, tables, footnotes and references, and the appendix includes prompt templates. The e-print URL 301-redirects to /src/2212.10560v2, an 8.1 MB gzip tarball (LaTeX). The license was read from the arXiv abs page."
+  },
+  {
+    "id": "arxiv-erdos-discrepancy",
+    "category": "math-heavy",
+    "title": "The Erdos discrepancy problem",
+    "author": "Terence Tao",
+    "license": "CC BY 4.0",
+    "license_url": "http://creativecommons.org/licenses/by/4.0/",
+    "pdf_url": "https://arxiv.org/pdf/1509.05363v6",
+    "approx_pages": 27,
+    "approx_mb": 0.44,
+    "reference": { "kind": "arxiv_source", "url": "https://arxiv.org/e-print/1509.05363v6" },
+    "notes": "math.CO, single-column LaTeX (US letter). Dense with displayed and inline equations, theorem/proof environments, sums, asymptotics and multiplicative functions. The source is a 54 KB gzip and redirects to /src/. Other CC BY math papers found: 2311.05762 (Gowers-Green-Manners-Tao, Marton's conjecture) and 2012.04125 (Tao, Sendov's conjecture)."
+  },
+  {
+    "id": "gibbon-decline-fall-v1",
+    "category": "footnote-heavy book",
+    "title": "The History of the Decline and Fall of the Roman Empire, Vol. 1 (Milman notes; Boston: Phillips, Sampson, 1850)",
+    "author": "Edward Gibbon (notes by H. H. Milman, Guizot, Wenck)",
+    "license": "Public domain (1850; IA possible-copyright-status NOT_IN_COPYRIGHT)",
+    "license_url": "https://archive.org/details/historydeclinefa01gibb",
+    "pdf_url": "https://archive.org/download/historydeclinefa01gibb/historydeclinefa01gibb.pdf",
+    "approx_pages": 656,
+    "approx_mb": 38.5,
+    "reference": {
+      "kind": "gutenberg_txt",
+      "url": "https://www.gutenberg.org/cache/epub/731/pg731.txt",
+      "mirror_url": "https://gutenberg.pglaf.org/cache/epub/731/pg731.txt"
+    },
+    "notes": "Internet Archive scan (University of California Libraries) with a hidden OCR text layer ('Text PDF'). Many footnotes per page, plus Milman's and Guizot's bracketed editor notes. The reference is the same edition: Milman notes, Chapters I-XV, the same editor's preface. Gutenberg #731 has about 1,681 footnotes as 'N (return) [ ... ]' blocks. The OCR layer is noisy ('Koivian', 'CHAPTEK'), so this tests footnote structure on top of imperfect OCR, not clean text. The last pages are library due-date slips. IA's _djvu.txt is a quick look at the embedded OCR. The download redirects to an IA datanode."
+  },
+  {
+    "id": "trifles-scan-imageonly",
+    "category": "scanned image-only PDF",
+    "title": "Trifles (1916)",
+    "author": "Susan Glaspell",
+    "license": "Public domain (1916; IA NOT_IN_COPYRIGHT). Google's cover page asks for non-commercial, non-automated use (a request, not a copyright license).",
+    "license_url": "https://archive.org/details/trifles00glasgoog",
+    "pdf_url": "https://archive.org/download/trifles00glasgoog/trifles00glasgoog.pdf",
+    "approx_pages": 37,
+    "approx_mb": 0.64,
+    "reference": {
+      "kind": "gutenberg_txt",
+      "url": "https://www.gutenberg.org/cache/epub/10623/pg10623.txt",
+      "mirror_url": "https://gutenberg.pglaf.org/cache/epub/10623/pg10623.txt"
+    },
+    "notes": "The original Google Books PDF ('Image Container PDF', producer 'Google Books PDF Converter'). Checked: pages 2-37 return no text from pdftotext. Page 1 is Google's text boilerplate page, so skip or exclude it. This is a true no-text-layer scan for OCR testing, and small. The reference, Gutenberg #10623, is Glaspell's 'Plays' (1920), with Trifles at about lines 35-740. That is a different printing, so expect small differences. An OCR'd twin for comparison is https://archive.org/download/trifles00glasgoog/trifles00glasgoog_text.pdf (IA derivative, 0.53 MB)."
+  },
+  {
+    "id": "sleepy-hollow-smoke",
+    "category": "smoke test",
+    "title": "The Legend of Sleepy Hollow",
+    "author": "Washington Irving",
+    "license": "Public domain (work); PDF typeset by Planet eBook and offered as a free download",
+    "license_url": "https://www.planetebook.com/",
+    "pdf_url": "https://www.planetebook.com/free-ebooks/the-legend-of-sleepy-hollow.pdf",
+    "approx_pages": 43,
+    "approx_mb": 0.32,
+    "reference": {
+      "kind": "gutenberg_txt",
+      "url": "https://www.gutenberg.org/cache/epub/41/pg41.txt",
+      "mirror_url": "https://gutenberg.pglaf.org/cache/epub/41/pg41.txt"
+    },
+    "notes": "Quick smoke test: plain prose, born-digital, 0.3 MB. It is 43 pages, a bit over the <30 target, but the pages are small (about 4.5x6.7 in), roughly 20 letter pages. Same running header/footer style as the P&P item. No short born-digital public-domain PDF under 30 pages with a matching Gutenberg text was found. If page count is strict, the 27-page arXiv math item or the 23-page Self-Instruct paper are the shortest PDFs here."
+  }
+]

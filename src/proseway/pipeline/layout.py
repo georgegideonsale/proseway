@@ -1,0 +1,744 @@
+"""Stage 2: whole-book layout analysis that turns positioned lines into reading blocks.
+
+Faithfulness rule: blocks contain the PDF's own words in the PDF's own order. We only remove
+layout artefacts (running headers/footers, printed page numbers, line-break hyphens) and
+never rewrite text.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+import statistics
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# Patterns
+# ---------------------------------------------------------------------------
+
+PAGE_NUMBER = re.compile(
+    r"^[\s\-–—|·•\[\(]*(?:page\s+|p\.\s*)?(?:\d{1,4}|[ivxlcdm]{1,8})"
+    r"(?:\s*(?:/|of)\s*\d{1,4})?[\s\-–—|·•\]\)]*$",
+    re.I,
+)
+BULLET = re.compile(r"^(?:[•◦▪▫‣⁃●○■□\-–—*]|\(?\d{1,3}[.)]|\(?[a-z][.)]|\(?[ivx]{1,5}[.)])\s+", re.I)
+CAPTION = re.compile(r"^(?:figure|fig\.|table|plate|chart|diagram|exhibit|map|listing)\s*[\dIVXLC]+", re.I)
+FOOTNOTE_MARK = re.compile(r"^\s*(\d{1,3}|[*†‡§¶‖#]{1,3}|[a-z])(?=[\s.)\]]|[A-Z])")
+TERMINAL = re.compile(r"[.!?:;…\"”’)\]»]$")
+WORD = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*", re.UNICODE)
+MATH_SYMBOLS = set("=+−×÷±∓∑∏∫∮∂∇√∞≤≥≠≈≡∈∉⊂⊃⊆⊇∪∩∀∃→←↔⇒⇔^_αβγδεθλμπσφωΓΔΘΛΠΣΦΨΩ")
+
+
+@dataclass
+class Line:
+    text: str
+    x0: float
+    x1: float
+    top: float
+    bot: float
+    size: float
+    font: str
+    bold: bool
+    italic: bool
+    mono: bool
+    math: float
+    spans: list[list[Any]]
+    page: int
+    col: str = "full"  # left | right | full
+    col_x0: float = 0.0
+    col_x1: float = 0.0
+
+    @property
+    def width(self) -> float:
+        return self.x1 - self.x0
+
+
+@dataclass
+class Block:
+    type: str  # heading | paragraph | footnote | list_item | code | equation | figure | caption | table | page_image
+    page: int
+    text: str = ""
+    level: int = 0
+    spans: list[list[Any]] = field(default_factory=list)
+    data: dict[str, Any] = field(default_factory=dict)
+    lines: list[Line] = field(default_factory=list)
+    id: str = ""
+    chapter: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def normalize_for_id(text: str) -> str:
+    return re.sub(r"[\W_]+", "", text.casefold())
+
+
+def running_key(text: str) -> str:
+    t = text.casefold()
+    t = re.sub(r"\d+", "#", t)
+    t = re.sub(r"\b[ivxlcdm]{1,8}\b", "#", t)
+    return re.sub(r"[\W_]+", "", t.replace("#", "0"))
+
+
+def _mode(values: list[float], default: float) -> float:
+    if not values:
+        return default
+    return Counter(values).most_common(1)[0][0]
+
+
+def _to_line(d: dict, page: int) -> Line:
+    return Line(
+        text=d["t"], x0=d["x0"], x1=d["x1"], top=d["top"], bot=d["bot"], size=d["sz"],
+        font=d.get("font", ""), bold=d.get("b", False), italic=d.get("i", False),
+        mono=d.get("m", False), math=d.get("mt", 0.0), spans=[list(s) for s in d.get("sp", [])],
+        page=page,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Book-level statistics
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BookStats:
+    body_size: float
+    heading_sizes: list[float]
+    vocab: Counter
+    indent_style: bool
+
+
+def compute_stats(pages: list[list[Line]]) -> BookStats:
+    weighted: Counter = Counter()
+    for lines in pages:
+        for ln in lines:
+            weighted[round(ln.size * 2) / 2] += len(ln.text)
+    body = weighted.most_common(1)[0][0] if weighted else 10.0
+    big = sorted({s for s, n in weighted.items() if s >= body * 1.18 and n >= 3}, reverse=True)
+    vocab: Counter = Counter()
+    for lines in pages:
+        for ln in lines:
+            text = ln.text[:-1] if ln.text.endswith("-") else ln.text
+            for w in WORD.findall(text):
+                vocab[w.casefold()] += 1
+    return BookStats(body_size=body, heading_sizes=big[:4], vocab=vocab, indent_style=False)
+
+
+# ---------------------------------------------------------------------------
+# Running headers, footers and page numbers
+# ---------------------------------------------------------------------------
+
+
+def remove_running_elements(pages: list[list[Line]], heights: list[float], body: float,
+                            removed: Counter) -> list[list[Line]]:
+    """Drop lines in the top/bottom margins that repeat on nearby pages or are page numbers."""
+    zones: list[list[tuple[int, str, str]]] = []  # per page: (line idx, zone, key)
+    for lines, h in zip(pages, heights, strict=True):
+        cand = []
+        if lines:
+            ordered = sorted(range(len(lines)), key=lambda i: lines[i].top)
+            top_idx = set(ordered[:3])
+            bot_idx = set(ordered[-3:])
+            # Body extent, to recognise lines that sit apart in the margins.
+            for i, ln in enumerate(lines):
+                if ln.size > body * 1.3:
+                    continue
+                if i in top_idx and ln.top < h * 0.16:
+                    cand.append((i, "top", running_key(ln.text)))
+                elif i in bot_idx and ln.bot > h * 0.80:
+                    cand.append((i, "bot", running_key(ln.text)))
+        zones.append(cand)
+
+    by_key: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for p, cand in enumerate(zones):
+        for _i, zone, key in cand:
+            if key:
+                by_key[(zone, key)].append(p)
+
+    out: list[list[Line]] = []
+    for p, (lines, cand) in enumerate(zip(pages, zones, strict=True)):
+        drop: set[int] = set()
+        for i, zone, key in cand:
+            text = lines[i].text.strip()
+            if PAGE_NUMBER.match(text):
+                drop.add(i)
+                removed["page_numbers"] += 1
+                continue
+            if not key:
+                continue
+            hits = by_key[(zone, key)]
+            # Repeats on at least two other pages within a window of +-8 pages, or on
+            # a large share of the whole book.
+            near = sum(1 for q in hits if q != p and abs(q - p) <= 8)
+            if near >= 2 or (len(hits) >= 4 and len(hits) >= 0.3 * len(pages)):
+                drop.add(i)
+                removed["running_lines"] += 1
+        out.append([ln for i, ln in enumerate(lines) if i not in drop])
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Reading order (columns)
+# ---------------------------------------------------------------------------
+
+
+def order_page(lines: list[Line], page_w: float) -> list[Line]:
+    if not lines:
+        return lines
+    left_edge = min(ln.x0 for ln in lines)
+    right_edge = max(ln.x1 for ln in lines)
+    width = max(right_edge - left_edge, 1.0)
+    mid = (left_edge + right_edge) / 2
+    slack = width * 0.03
+    for ln in lines:
+        if ln.x1 <= mid + slack and ln.width < width * 0.6:
+            ln.col = "left"
+        elif ln.x0 >= mid - slack and ln.width < width * 0.6:
+            ln.col = "right"
+        else:
+            ln.col = "full"
+    n_left = sum(1 for ln in lines if ln.col == "left")
+    n_right = sum(1 for ln in lines if ln.col == "right")
+    right_starts = [round(ln.x0) for ln in lines if ln.col == "right"]
+    two_col = (
+        n_left >= 5 and n_right >= 5
+        and right_starts
+        and Counter(right_starts).most_common(1)[0][1] >= max(3, n_right * 0.3)
+    )
+    if not two_col:
+        for ln in lines:
+            ln.col = "full"
+            ln.col_x0, ln.col_x1 = left_edge, right_edge
+        ordered = sorted(lines, key=lambda ln: (round(ln.top / 2), ln.x0))
+        return _merge_same_baseline(ordered)
+
+    left_x1 = max((ln.x1 for ln in lines if ln.col == "left"), default=mid)
+    right_x0 = min((ln.x0 for ln in lines if ln.col == "right"), default=mid)
+    for ln in lines:
+        if ln.col == "left":
+            ln.col_x0, ln.col_x1 = left_edge, left_x1
+        elif ln.col == "right":
+            ln.col_x0, ln.col_x1 = right_x0, right_edge
+        else:
+            ln.col_x0, ln.col_x1 = left_edge, right_edge
+
+    ordered: list[Line] = []
+    band_left: list[Line] = []
+    band_right: list[Line] = []
+
+    def flush() -> None:
+        ordered.extend(sorted(band_left, key=lambda ln: ln.top))
+        ordered.extend(sorted(band_right, key=lambda ln: ln.top))
+        band_left.clear()
+        band_right.clear()
+
+    for ln in sorted(lines, key=lambda ln: (ln.top, ln.x0)):
+        if ln.col == "full":
+            flush()
+            ordered.append(ln)
+        elif ln.col == "left":
+            band_left.append(ln)
+        else:
+            band_right.append(ln)
+    flush()
+    return ordered
+
+
+def _merge_same_baseline(lines: list[Line]) -> list[Line]:
+    """In single-column pages, rejoin segments that share a baseline (e.g. 'Title .... 12')."""
+    out: list[Line] = []
+    for ln in lines:
+        prev = out[-1] if out else None
+        if (
+            prev is not None
+            and abs(prev.top - ln.top) < 1.5
+            and abs(prev.size - ln.size) < 0.6
+            and ln.x0 > prev.x1
+            and not prev.mono
+        ):
+            offset = len(prev.text) + 1
+            prev.text = prev.text + " " + ln.text
+            prev.spans.extend([[s + offset, e + offset, k] for s, e, k in ln.spans])
+            prev.x1 = ln.x1
+            prev.bot = max(prev.bot, ln.bot)
+        else:
+            out.append(ln)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Hyphenation
+# ---------------------------------------------------------------------------
+
+
+def should_join_hyphen(left: str, right: str, vocab: Counter) -> bool:
+    """Decide whether 'left-' at a line end + 'right' at the next line start is one word."""
+    lw = WORD.findall(left)
+    rw = WORD.findall(right)
+    if not lw or not rw:
+        return False
+    a, b = lw[-1], rw[0]
+    if not b[:1].islower():
+        return False
+    joined = (a + b).casefold()
+    hyphenated_seen = False
+    if vocab.get(joined, 0) > 0:
+        return True
+    # Did the hyphenated form appear mid-line somewhere? The vocab tokenizer splits on '-',
+    # so we approximate with "both halves are frequent standalone words".
+    if vocab.get(a.casefold(), 0) >= 2 and vocab.get(b.casefold(), 0) >= 2 and len(a) >= 3 and len(b) >= 3:
+        hyphenated_seen = True
+    return not hyphenated_seen
+
+
+# ---------------------------------------------------------------------------
+# Main assembly
+# ---------------------------------------------------------------------------
+
+
+class Assembler:
+    def __init__(self, stats: BookStats):
+        self.stats = stats
+        self.blocks: list[Block] = []
+        self.open: Block | None = None
+        self.removed: Counter = Counter()
+
+    # -- paragraph accumulation -------------------------------------------------
+
+    def _append_text(self, block: Block, line: Line) -> None:
+        if not block.text:
+            block.text = line.text
+            block.spans = [list(s) for s in line.spans]
+            block.lines.append(line)
+            return
+        prev = block.text
+        joiner = " "
+        cut = 0
+        if prev.endswith("­"):
+            cut, joiner = 1, ""
+            self.removed["hyphens_joined"] += 1
+        elif (
+            prev.endswith("-")
+            and not prev.endswith("--")
+            and len(prev) >= 2
+            and prev[-2].isalpha()
+            and line.text[:1].isalpha()
+        ):
+            if should_join_hyphen(prev[:-1], line.text, self.stats.vocab):
+                cut, joiner = 1, ""
+                self.removed["hyphens_joined"] += 1
+            else:
+                joiner = ""
+                self.removed["hyphens_kept"] += 1
+        if cut:
+            block.text = prev[:-cut]
+            block.spans = [[s, min(e, len(block.text)), k] for s, e, k in block.spans if s < len(block.text)]
+        offset = len(block.text) + len(joiner)
+        block.text = block.text + joiner + line.text
+        block.spans.extend([[s + offset, e + offset, k] for s, e, k in line.spans])
+        block.lines.append(line)
+
+    def close(self) -> None:
+        if self.open is not None and self.open.text.strip():
+            self.blocks.append(self.open)
+        self.open = None
+
+    def start(self, btype: str, line: Line, level: int = 0) -> Block:
+        self.close()
+        self.open = Block(type=btype, page=line.page, level=level)
+        self._append_text(self.open, line)
+        return self.open
+
+    def emit(self, block: Block) -> None:
+        self.close()
+        self.blocks.append(block)
+
+    # -- classification -----------------------------------------------------------
+
+    def heading_level(self, line: Line) -> int:
+        body = self.stats.body_size
+        if len(line.text) > 160:
+            return 0
+        if line.size >= body * 1.18:
+            for i, s in enumerate(self.stats.heading_sizes):
+                if line.size >= s - 0.25:
+                    return min(i + 1, 4)
+            return min(len(self.stats.heading_sizes) + 1, 4) or 1
+        return 0
+
+    def is_bold_heading(self, line: Line, prev: Line | None, nxt: Line | None) -> bool:
+        if not line.bold or len(line.text) > 90 or TERMINAL.search(line.text.rstrip("*")):
+            return False
+        if nxt is not None and nxt.bold and nxt.page == line.page and nxt.top - line.bot < line.size:
+            return False
+        gap_above = (line.top - prev.bot) if prev is not None and prev.page == line.page else line.size * 2
+        return gap_above > line.size * 0.6 and abs(line.size - self.stats.body_size) < 1.5
+
+    def is_equation(self, line: Line) -> bool:
+        if line.mono or len(line.text) > 140:
+            return False
+        sym = sum(1 for ch in line.text if ch in MATH_SYMBOLS)
+        words = WORD.findall(line.text)
+        long_words = sum(1 for w in words if len(w) > 3)
+        centered = line.col_x1 > line.col_x0 and abs(
+            (line.x0 + line.x1) / 2 - (line.col_x0 + line.col_x1) / 2
+        ) < (line.col_x1 - line.col_x0) * 0.08 and line.width < (line.col_x1 - line.col_x0) * 0.8
+        if line.math >= 0.35 and centered and long_words <= 4:
+            return True
+        return centered and sym >= 2 and long_words <= 2 and line.math >= 0.15
+
+    def paragraph_break(self, prev: Line, cur: Line, gap_ref: float) -> bool:
+        if prev.page != cur.page or prev.col != cur.col:
+            # Across a page or column boundary: continue the paragraph only if the
+            # previous line looks unfinished or the new line isn't indented.
+            unfinished = not TERMINAL.search(prev.text) or prev.text.endswith("-")
+            indented = cur.x0 > cur.col_x0 + cur.size * 0.8
+            if unfinished and cur.text[:1].islower():
+                return False
+            if unfinished and not indented:
+                return False
+            return not (self.stats.indent_style and not indented and not TERMINAL.search(prev.text))
+        gap = cur.top - prev.bot
+        if gap > gap_ref + cur.size * 0.55:
+            return True
+        if abs(cur.size - prev.size) > max(prev.size * 0.15, 1.0):
+            return True
+        if cur.x0 > cur.col_x0 + cur.size * 0.8 and cur.x0 > prev.x0 + cur.size * 0.5:
+            return True
+        return prev.x1 < cur.col_x1 - cur.size * 3 and bool(TERMINAL.search(prev.text))
+
+    # -- per page --------------------------------------------------------------
+
+    def add_page(self, page_no: int, lines: list[Line], page_h: float, images: list[dict],
+                 tables: list[dict]) -> None:
+        body = self.stats.body_size
+
+        # Tables: remove lines inside table areas, insert table blocks in reading order.
+        table_blocks: list[tuple[float, str, Block]] = []
+        for t in tables:
+            x0, top, x1, bot = t["bbox"]
+            inside = [ln for ln in lines if x0 - 2 <= (ln.x0 + ln.x1) / 2 <= x1 + 2 and top - 2 <= (ln.top + ln.bot) / 2 <= bot + 2]
+            if not inside:
+                continue
+            ids = {id(ln) for ln in inside}
+            lines = [ln for ln in lines if id(ln) not in ids]
+            text = "\n".join(" | ".join(cell.replace("\n", " ") for cell in row) for row in t["rows"])
+            table_blocks.append((top, "full", Block(type="table", page=page_no, text=text, data={"rows": t["rows"]})))
+
+        # Footnote region: small lines at the bottom of the page.
+        foot_start = len(lines)
+        for i in range(len(lines) - 1, -1, -1):
+            ln = lines[i]
+            if ln.size <= body * 0.9 and ln.top > page_h * 0.55 and not CAPTION.match(ln.text):
+                foot_start = i
+            else:
+                break
+        footnote_lines = lines[foot_start:]
+        if footnote_lines and not FOOTNOTE_MARK.match(footnote_lines[0].text) and not (
+            self.blocks and self.blocks[-1].type == "footnote" or self._pending_footnotes
+        ):
+            # Small text at the bottom without a marker: probably not footnotes.
+            footnote_lines = []
+            foot_start = len(lines)
+        main = lines[:foot_start]
+
+        # Inline figures in reading order by their top edge.
+        visuals: list[tuple[float, Block]] = []
+        for im in images:
+            btype = "page_image" if im.get("scan") else "figure"
+            visuals.append((im["top"], Block(type=btype, page=page_no, data={
+                "src": im["file"], "w": round(im["x1"] - im["x0"]), "h": round(im["bot"] - im["top"])})))
+        for top, _col, tb in table_blocks:
+            visuals.append((top, tb))
+        visuals.sort(key=lambda v: v[0])
+
+        gaps = [b.top - a.bot for a, b in zip(main, main[1:], strict=False)
+                if a.col == b.col and 0 <= b.top - a.bot < body * 2]
+        gap_ref = statistics.median(gaps) if gaps else body * 0.3
+
+        prev: Line | None = self.open.lines[-1] if self.open is not None and self.open.lines else None
+        vi = 0
+        for idx, ln in enumerate(main):
+            while vi < len(visuals) and visuals[vi][0] <= ln.top and (ln.col != "right" or True):
+                self.emit(visuals[vi][1])
+                vi += 1
+                prev = None
+            nxt = main[idx + 1] if idx + 1 < len(main) else None
+            text = ln.text.strip()
+            if not text:
+                continue
+            level = self.heading_level(ln)
+            if level == 0 and self.is_bold_heading(ln, prev, nxt):
+                level = len(self.stats.heading_sizes) + 1 if self.stats.heading_sizes else 2
+                level = min(level, 4)
+            if level:
+                o = self.open
+                if (
+                    o is not None and o.type == "heading" and o.level == level and prev is not None
+                    and prev.page == ln.page and ln.top - prev.bot < ln.size * 0.9
+                ):
+                    self._append_text(o, ln)
+                else:
+                    self.start("heading", ln, level)
+            elif ln.mono:
+                o = self.open
+                indent = " " * max(0, round((ln.x0 - ln.col_x0) / max(ln.size * 0.6, 1)))
+                if o is not None and o.type == "code":
+                    o.text += "\n" + indent + ln.text
+                    o.lines.append(ln)
+                else:
+                    self.close()
+                    self.open = Block(type="code", page=ln.page, text=indent + ln.text, lines=[ln])
+            elif self.is_equation(ln):
+                o = self.open
+                if o is not None and o.type == "equation" and prev is not None and ln.top - prev.bot < ln.size * 1.2:
+                    o.text += "\n" + ln.text
+                    o.lines.append(ln)
+                else:
+                    self.close()
+                    self.open = Block(type="equation", page=ln.page, text=ln.text, lines=[ln])
+            elif CAPTION.match(text) and (ln.size < body * 0.98 or ln.bold or ln.italic or self._near_visual(ln, visuals)):
+                self.start("caption", ln)
+            elif BULLET.match(text) and (self.open is None or self.open.type != "paragraph" or prev is None
+                                         or self.paragraph_break(prev, ln, gap_ref) or ln.x0 <= prev.x0 + 1):
+                self.start("list_item", ln)
+            else:
+                o = self.open
+                if o is not None and o.type in ("paragraph", "list_item", "caption") and prev is not None and not self.paragraph_break(prev, ln, gap_ref):
+                    self._append_text(o, ln)
+                elif o is not None and o.type in ("paragraph", "list_item") and prev is None and o.lines and not self.paragraph_break(o.lines[-1], ln, gap_ref):
+                    self._append_text(o, ln)
+                else:
+                    self.start("paragraph", ln)
+            prev = ln
+        # Paragraph may continue on next page; visuals after the last line go after it.
+        pending_visuals = [v[1] for v in visuals[vi:]]
+        if pending_visuals:
+            self.close()
+            for b in pending_visuals:
+                self.blocks.append(b)
+
+        # Footnotes are emitted after the page's body, at the paragraph break nearest the end
+        # of the page, so they never split a sentence.
+        notes: list[Block] = []
+        for ln in footnote_lines:
+            m = FOOTNOTE_MARK.match(ln.text)
+            starts_with_sup = bool(ln.spans and ln.spans[0][0] == 0 and ln.spans[0][2] == "sup")
+            if m and (starts_with_sup or m.group(1).isdigit() or not m.group(1).isalpha()):
+                notes.append(Block(type="footnote", page=ln.page, data={"marker": m.group(1)}))
+                self._append_text(notes[-1], ln)
+            elif notes:
+                self._append_text(notes[-1], ln)
+            elif self._pending_footnotes:
+                self._append_text(self._pending_footnotes[-1], ln)
+            elif self.blocks and self.blocks[-1].type == "footnote":
+                self._append_text(self.blocks[-1], ln)
+            else:
+                notes.append(Block(type="footnote", page=ln.page, data={"marker": ""}))
+                self._append_text(notes[-1], ln)
+        self._pending_footnotes.extend(notes)
+        if self.open is None or self.open.type != "paragraph":
+            self.flush_footnotes()
+
+    _pending_footnotes: list[Block]
+
+    def flush_footnotes(self) -> None:
+        if self._pending_footnotes:
+            self.close()
+            self.blocks.extend(self._pending_footnotes)
+            self._pending_footnotes = []
+
+    def _near_visual(self, ln: Line, visuals: list[tuple[float, Block]]) -> bool:
+        return bool(visuals)
+
+
+def assemble(pages_data: list[dict], outline: list[dict] | None = None) -> dict[str, Any]:
+    """Turn the per-page JSON documents into blocks, chapters and a table of contents."""
+    pages_data = sorted(pages_data, key=lambda p: p["n"])
+    raw_pages = [[_to_line(d, p["n"]) for d in p["lines"]] for p in pages_data]
+    heights = [p["h"] for p in pages_data]
+    stats = compute_stats(raw_pages)
+    removed: Counter = Counter()
+    cleaned = remove_running_elements(raw_pages, heights, stats.body_size, removed)
+    ordered = [order_page(lines, p["w"]) for lines, p in zip(cleaned, pages_data, strict=True)]
+
+    # Indentation style: share of body lines that start ~1-3 em in from their column.
+    body_lines = [ln for page in ordered for ln in page if abs(ln.size - stats.body_size) < 0.6]
+    indented = sum(1 for ln in body_lines if ln.size * 0.8 < ln.x0 - ln.col_x0 < ln.size * 3.5)
+    stats.indent_style = bool(body_lines) and indented / len(body_lines) > 0.03
+
+    asm = Assembler(stats)
+    asm._pending_footnotes = []
+    asm.removed = removed
+    for page, lines in zip(pages_data, ordered, strict=True):
+        asm.add_page(page["n"], lines, page["h"], page.get("images", []), page.get("tables", []))
+        if asm.open is None or asm.open.type != "paragraph":
+            asm.flush_footnotes()
+    asm.close()
+    asm.flush_footnotes()
+
+    blocks = _merge_captions(asm.blocks)
+    assign_ids(blocks)
+    link_footnotes(blocks)
+    toc = assign_chapters(blocks, outline or [])
+    return {
+        "blocks": blocks,
+        "toc": toc,
+        "stats": {
+            "body_size": stats.body_size,
+            "removed": dict(removed),
+            "pages": len(pages_data),
+            "ocr_pages": sum(1 for p in pages_data if p.get("ocr")),
+            "scanned_pages": sum(1 for p in pages_data if p.get("scanned")),
+            "blocks": len(blocks),
+            "words": sum(len(WORD.findall(b.text)) for b in blocks),
+        },
+    }
+
+
+def _merge_captions(blocks: list[Block]) -> list[Block]:
+    """Point figures at their captions when they sit next to each other."""
+    for i, b in enumerate(blocks):
+        if b.type != "caption":
+            continue
+        for j in (i - 1, i + 1, i - 2):
+            if 0 <= j < len(blocks) and blocks[j].type in ("figure", "table") and blocks[j].page == b.page:
+                blocks[j].data["caption_index"] = i
+                break
+    return blocks
+
+
+def assign_ids(blocks: list[Block]) -> None:
+    seen: Counter = Counter()
+    fig_seen: Counter = Counter()
+    for b in blocks:
+        if b.type in ("figure", "page_image"):
+            fig_seen[b.page] += 1
+            base = f"f{b.page}x{fig_seen[b.page]}"
+        else:
+            norm = normalize_for_id(b.text)[:4000] or f"empty{b.page}"
+            base = hashlib.sha1(norm.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
+        seen[base] += 1
+        b.id = base if seen[base] == 1 else f"{base}-{seen[base]}"
+    # Captions are referenced by index until ids exist.
+    for b in blocks:
+        idx = b.data.pop("caption_index", None)
+        if idx is not None:
+            b.data["caption"] = blocks[idx].id
+
+
+def link_footnotes(blocks: list[Block]) -> None:
+    """Turn superscript markers in body text into links to the matching footnote."""
+    notes_by_page: dict[int, dict[str, str]] = defaultdict(dict)
+    for b in blocks:
+        if b.type == "footnote" and b.data.get("marker"):
+            notes_by_page[b.page].setdefault(b.data["marker"], b.id)
+    if not notes_by_page:
+        return
+    for b in blocks:
+        if b.type in ("footnote", "figure", "page_image", "table"):
+            continue
+        for span in b.spans:
+            if span[2] != "sup":
+                continue
+            marker = b.text[span[0]:span[1]].strip()
+            for page in (b.page, b.page + 1, b.page - 1):
+                target = notes_by_page.get(page, {}).get(marker)
+                if target:
+                    span[2] = "fnref"
+                    span.append(target)
+                    break
+
+
+def assign_chapters(blocks: list[Block], outline: list[dict]) -> list[dict]:
+    """Split into chapters (for lazy loading) and build the table of contents."""
+    toc: list[dict] = []
+    if not blocks:
+        return toc
+    starts: list[int] = []
+    top_level = [o for o in outline if o["level"] == min((x["level"] for x in outline), default=0)]
+    if len(top_level) >= 2:
+        for entry in outline:
+            idx = _find_outline_block(blocks, entry)
+            if idx is None:
+                continue
+            toc.append({"title": entry["title"], "level": entry["level"] - min(o["level"] for o in outline) + 1,
+                        "block": blocks[idx].id, "page": blocks[idx].page, "_idx": idx})
+            if entry in top_level:
+                starts.append(idx)
+    else:
+        headings = [(i, b) for i, b in enumerate(blocks) if b.type == "heading"]
+        if headings:
+            top = min(b.level for _i, b in headings)
+            for i, b in headings:
+                if b.level <= top + 2:
+                    toc.append({"title": b.text, "level": b.level - top + 1, "block": b.id, "page": b.page, "_idx": i})
+                if b.level == top:
+                    starts.append(i)
+    # Keep chapters to a sane size for lazy loading: split very long ones by page.
+    starts = sorted(set([0] + starts))
+    bounds: list[int] = []
+    for k, s in enumerate(starts):
+        e = starts[k + 1] if k + 1 < len(starts) else len(blocks)
+        bounds.append(s)
+        chunk_start = s
+        for i in range(s, e):
+            if i - chunk_start >= 400 and blocks[i].type in ("paragraph", "heading") and blocks[i].page != blocks[i - 1].page:
+                bounds.append(i)
+                chunk_start = i
+    bounds = sorted(set(bounds))
+    ch = -1
+    bset = set(bounds)
+    for i, b in enumerate(blocks):
+        if i in bset:
+            ch += 1
+        b.chapter = ch
+    toc.sort(key=lambda t: t["_idx"])
+    for t in toc:
+        t["chapter"] = blocks[t.pop("_idx")].chapter
+    return toc
+
+
+def _find_outline_block(blocks: list[Block], entry: dict) -> int | None:
+    from rapidfuzz import fuzz
+
+    page = entry["page"]
+    best, best_score = None, 0.0
+    first_on_page = None
+    for i, b in enumerate(blocks):
+        if b.page < page:
+            continue
+        if b.page > page:
+            break
+        if first_on_page is None:
+            first_on_page = i
+        if b.type in ("heading", "paragraph"):
+            score = fuzz.partial_ratio(entry["title"].casefold(), b.text[:200].casefold())
+            if score > best_score:
+                best, best_score = i, score
+    if best is not None and best_score >= 80:
+        return best
+    if first_on_page is not None:
+        return first_on_page
+    # Page had no blocks (e.g. blank); use the next block after it.
+    for i, b in enumerate(blocks):
+        if b.page > page:
+            return i
+    return None
+
+
+def block_to_row(b: Block) -> dict[str, Any]:
+    data = dict(b.data)
+    if b.spans:
+        data["spans"] = b.spans
+    if b.type == "equation" and b.lines:
+        data["bbox"] = [
+            min(ln.x0 for ln in b.lines), min(ln.top for ln in b.lines),
+            max(ln.x1 for ln in b.lines), max(ln.bot for ln in b.lines),
+        ]
+    return {"id": b.id, "type": b.type, "page": b.page, "level": b.level, "text": b.text,
+            "chapter": b.chapter, "data": data}

@@ -1,0 +1,174 @@
+/*
+ * Proseway design tokens.
+ *
+ * Motif: bookbinding. Uncoated paper, ink, a binding-cloth green for anything you can act on,
+ * and a crimson ribbon reserved for bookmarks and reading progress.
+ * Contrast pairs used for text are checked to WCAG AA (4.5:1) in every theme; see
+ * docs/decisions/0006-design-system.md.
+ */
+
+:root {
+  /* Type */
+  --font-ui: "Atkinson Hyperlegible Next Variable", "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-literata: "Literata Variable", Literata, Georgia, serif;
+  --font-source-serif: "Source Serif 4 Variable", "Source Serif 4", Georgia, serif;
+  --font-atkinson: var(--font-ui);
+  --font-dyslexic: "OpenDyslexic", var(--font-ui);
+  --font-system: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.6rem;
+  --text-2xl: 2.1rem;
+
+  /* Spacing (4px base) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 72px;
+
+  /* Radius: small for controls, larger for floating surfaces, none for book covers */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --r-pill: 999px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --t-fast: 120ms;
+  --t-med: 220ms;
+  --t-slow: 380ms;
+
+  /* Layout */
+  --topbar-h: 56px;
+  --panel-w: 380px;
+
+  /* Reader settings (overridden from settings) */
+  --reader-font: var(--font-literata);
+  --reader-size: 19px;
+  --reader-leading: 1.62;
+  --reader-measure: 34em;
+  --reader-align: left;
+}
+
+/* Paper (default light) */
+:root,
+:root[data-theme="paper"] {
+  --bg: #f5f6f1;
+  --bg-raised: #fdfdfa;
+  --bg-sunken: #ebede5;
+  --ink: #1e2433;
+  --ink-soft: #4a5163;
+  --ink-faint: #6b7182;
+  --rule: #d9dbd2;
+  --rule-strong: #c3c6bb;
+  --accent: #2f5d50;
+  --accent-ink: #ffffff;
+  --accent-soft: #dfe9e4;
+  --ribbon: #9c2f3a;
+  --focus: #2f5d50;
+  --danger: #a1322b;
+  --shadow: 0 1px 2px rgba(30, 36, 51, 0.06), 0 8px 28px rgba(30, 36, 51, 0.1);
+  --cover-shadow: 0 1px 1px rgba(30, 36, 51, 0.12), 0 6px 14px -6px rgba(30, 36, 51, 0.35);
+  --hl-yellow: #f7e27e;
+  --hl-green: #c3e5b8;
+  --hl-blue: #bfdcf5;
+  --hl-pink: #f6c6d6;
+  --hl-purple: #dccdf3;
+  --scrim: rgba(30, 36, 51, 0.28);
+  color-scheme: light;
+}
+
+/* Sepia: warmer paper for evening reading under lamps */
+:root[data-theme="sepia"] {
+  --bg: #f3ead9;
+  --bg-raised: #faf4e8;
+  --bg-sunken: #e8dcc6;
+  --ink: #3a2e22;
+  --ink-soft: #5e4f3f;
+  --ink-faint: #76664f;
+  --rule: #ddcfb6;
+  --rule-strong: #cbb995;
+  --accent: #3e5a46;
+  --accent-ink: #ffffff;
+  --accent-soft: #dfe2cf;
+  --ribbon: #93303a;
+  --focus: #3e5a46;
+  --danger: #9a3226;
+  --hl-yellow: #f0d675;
+  --hl-green: #c7dba6;
+  --hl-blue: #c3d6e4;
+  --hl-pink: #efc3c3;
+  --hl-purple: #d8c8e3;
+  color-scheme: light;
+}
+
+/* Dusk: low-contrast dark for dim rooms */
+:root[data-theme="dusk"] {
+  --bg: #22252d;
+  --bg-raised: #2b2f38;
+  --bg-sunken: #1c1f25;
+  --ink: #dcdfe6;
+  --ink-soft: #b2b7c3;
+  --ink-faint: #9298a6;
+  --rule: #3a3f4a;
+  --rule-strong: #4a505d;
+  --accent: #8cc3ad;
+  --accent-ink: #11211b;
+  --accent-soft: #2f4840;
+  --ribbon: #e0727c;
+  --focus: #8cc3ad;
+  --danger: #f08c80;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 30px rgba(0, 0, 0, 0.35);
+  --cover-shadow: 0 1px 1px rgba(0, 0, 0, 0.4), 0 8px 18px -8px rgba(0, 0, 0, 0.6);
+  --hl-yellow: rgba(232, 200, 84, 0.42);
+  --hl-green: rgba(126, 196, 120, 0.38);
+  --hl-blue: rgba(110, 170, 230, 0.4);
+  --hl-pink: rgba(232, 128, 160, 0.4);
+  --hl-purple: rgba(170, 140, 230, 0.42);
+  --scrim: rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
+}
+
+/* Night: deepest dark, for reading in bed */
+:root[data-theme="night"] {
+  --bg: #121317;
+  --bg-raised: #1b1d22;
+  --bg-sunken: #0d0e11;
+  --ink: #c9ccd3;
+  --ink-soft: #a4a8b2;
+  --ink-faint: #868b96;
+  --rule: #2a2d34;
+  --rule-strong: #3a3e47;
+  --accent: #7fb59f;
+  --accent-ink: #0e1a15;
+  --accent-soft: #233630;
+  --ribbon: #d96670;
+  --focus: #7fb59f;
+  --danger: #ec8a7e;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 10px 30px rgba(0, 0, 0, 0.5);
+  --cover-shadow: 0 1px 1px rgba(0, 0, 0, 0.5), 0 8px 18px -8px rgba(0, 0, 0, 0.7);
+  --hl-yellow: rgba(214, 184, 72, 0.36);
+  --hl-green: rgba(110, 180, 104, 0.32);
+  --hl-blue: rgba(96, 156, 214, 0.34);
+  --hl-pink: rgba(214, 112, 144, 0.34);
+  --hl-purple: rgba(156, 126, 214, 0.36);
+  --scrim: rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 0ms;
+    --t-med: 0ms;
+    --t-slow: 0ms;
+  }
+}

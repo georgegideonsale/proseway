@@ -1,0 +1,198 @@
+"""Exporting highlights and notes (Markdown) and full backups (JSON) with restore."""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+from typing import Any
+
+from . import __version__
+from .anchoring import Anchor, BlockText, resolve
+from .db import Database
+from .library import ANNOTATION_COLUMNS
+from .paths import DataPaths
+
+BACKUP_FORMAT = "proseway-backup"
+BACKUP_VERSION = 1
+COLOR_NAMES = {"yellow": "Yellow", "green": "Green", "blue": "Blue", "pink": "Pink", "purple": "Purple"}
+
+
+def _chapter_titles(toc: list[dict]) -> dict[int, str]:
+    titles: dict[int, str] = {}
+    for entry in toc:
+        ch = entry.get("chapter")
+        if ch is not None and ch not in titles:
+            titles[ch] = entry["title"]
+    return titles
+
+
+def markdown_for_book(db: Database, book_id: str) -> str:
+    with db.connect() as c:
+        book = c.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
+        if book is None:
+            raise KeyError(book_id)
+        anns = c.execute(
+            "SELECT a.*, b.chapter AS chapter FROM annotations a "
+            "LEFT JOIN blocks b ON b.book_id=a.book_id AND b.id=a.block_id "
+            "WHERE a.book_id=? ORDER BY COALESCE(a.seq, 0), a.start", (book_id,)
+        ).fetchall()
+    toc = json.loads(book["toc_json"] or "[]")
+    titles = _chapter_titles(toc)
+    title = book["title"][:-4] if book["title"].endswith(".pdf") else book["title"]
+    highlights = [a for a in anns if a["kind"] == "highlight"]
+    bookmarks = [a for a in anns if a["kind"] == "bookmark"]
+    groups: dict[str, list[Any]] = {}
+    for a in highlights:
+        groups.setdefault(a["group_id"] or a["id"], []).append(a)
+
+    out = [f"# {title}", ""]
+    if book["author"]:
+        out += [f"*{book['author']}*", ""]
+    n_notes = sum(1 for g in groups.values() if any(x["note"] for x in g))
+    today = dt.date.today().isoformat()
+    out += [f"Exported from Proseway on {today}. {len(groups)} highlights, {n_notes} notes.", ""]
+
+    current_chapter: object = object()
+    for parts in groups.values():
+        first = parts[0]
+        ch = first["chapter"]
+        if ch != current_chapter:
+            current_chapter = ch
+            heading = titles.get(ch) if ch is not None else None
+            if heading:
+                out += [f"## {heading}", ""]
+            elif ch is None:
+                out += ["## Unplaced highlights", ""]
+        quote = " ".join(p["exact"] for p in parts).strip()
+        for line in quote.splitlines() or [""]:
+            out.append(f"> {line}")
+        meta = []
+        if first["page"]:
+            meta.append(f"p. {first['page']}")
+        if first["color"]:
+            meta.append(COLOR_NAMES.get(first["color"], first["color"]))
+        if any(p["orphaned"] for p in parts):
+            meta.append("could not be placed after re-conversion")
+        out.append(f">\n> — {' · '.join(meta)}" if meta else "")
+        note = "\n".join(p["note"] for p in parts if p["note"]).strip()
+        if note:
+            out += ["", note]
+        out.append("")
+    if bookmarks:
+        out += ["## Bookmarks", ""]
+        for b in bookmarks:
+            label = b["note"] or (b["exact"][:80] if b["exact"] else "")
+            out.append(f"- p. {b['page']}" + (f": {label}" if label else ""))
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def build_backup(db: Database, book_ids: list[str] | None = None) -> dict[str, Any]:
+    with db.connect() as c:
+        books = c.execute("SELECT * FROM books ORDER BY created_at").fetchall()
+        out_books = []
+        for b in books:
+            if book_ids and b["id"] not in book_ids:
+                continue
+            anns = [
+                {k: r[k] for k in ANNOTATION_COLUMNS if k != "book_id"}
+                for r in c.execute("SELECT * FROM annotations WHERE book_id=? ORDER BY seq", (b["id"],))
+            ]
+            pos = c.execute("SELECT block_id, seq, progress, updated_at FROM positions WHERE book_id=?",
+                            (b["id"],)).fetchone()
+            out_books.append({
+                "sha256": b["sha256"],
+                "title": b["title"][:-4] if b["title"].endswith(".pdf") else b["title"],
+                "author": b["author"],
+                "fileName": b["file_name"],
+                "position": dict(pos) if pos else None,
+                "annotations": anns,
+            })
+    return {
+        "format": BACKUP_FORMAT,
+        "version": BACKUP_VERSION,
+        "app": f"proseway {__version__}",
+        "exportedAt": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "books": out_books,
+    }
+
+
+class BackupError(ValueError):
+    pass
+
+
+def _clean_annotation(a: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(a, dict):
+        raise BackupError("annotation is not an object")
+    out = {k: a.get(k) for k in ANNOTATION_COLUMNS if k != "book_id" and k in a}
+    if not isinstance(out.get("id"), str) or not out["id"] or len(out["id"]) > 64:
+        raise BackupError("annotation without a valid id")
+    if out.get("kind") not in ("highlight", "bookmark"):
+        raise BackupError("unknown annotation kind")
+    for key in ("exact", "prefix", "suffix", "note", "block_id"):
+        if key in out and out[key] is not None and not isinstance(out[key], str):
+            raise BackupError(f"bad {key}")
+    for key in ("start", "end", "page", "seq", "orphaned"):
+        if out.get(key) is not None and not isinstance(out[key], int):
+            raise BackupError(f"bad {key}")
+    out.setdefault("block_id", "")
+    out.setdefault("created_at", 0.0)
+    out.setdefault("updated_at", out["created_at"])
+    return out
+
+
+def restore_backup(db: Database, paths: DataPaths, data: Any) -> dict[str, int]:
+    """Merge a backup into the library. Newer edits win; nothing is deleted."""
+    if not isinstance(data, dict) or data.get("format") != BACKUP_FORMAT:
+        raise BackupError("This file isn't a Proseway backup.")
+    if not isinstance(data.get("version"), int) or data["version"] > BACKUP_VERSION:
+        raise BackupError("This backup was made by a newer version of Proseway.")
+    stats = {"books_matched": 0, "books_waiting": 0, "annotations_added": 0, "annotations_updated": 0}
+    for entry in data.get("books", []):
+        if not isinstance(entry, dict) or not isinstance(entry.get("sha256"), str):
+            raise BackupError("book entry without a file fingerprint")
+        anns = [_clean_annotation(a) for a in entry.get("annotations", [])]
+        with db.connect() as c:
+            book = c.execute("SELECT id FROM books WHERE sha256=?", (entry["sha256"],)).fetchone()
+        if book is None:
+            # Keep them until the matching PDF is imported.
+            detached = paths.root / "detached-annotations"
+            detached.mkdir(exist_ok=True)
+            f = detached / f"{entry['sha256'][:64]}.json"
+            existing = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"annotations": []}
+            known = {a["id"] for a in existing["annotations"]}
+            existing["annotations"] += [a for a in anns if a["id"] not in known]
+            existing.update({"sha256": entry["sha256"], "title": entry.get("title", "")})
+            f.write_text(json.dumps(existing, ensure_ascii=False, indent=1), encoding="utf-8")
+            stats["books_waiting"] += 1
+            continue
+        book_id = book["id"]
+        stats["books_matched"] += 1
+        with db.transaction() as c:
+            blocks = [BlockText(r["id"], r["text"], r["page"], r["seq"])
+                      for r in c.execute("SELECT id, text, page, seq FROM blocks WHERE book_id=? ORDER BY seq", (book_id,))]
+            for a in anns:
+                cur = c.execute("SELECT updated_at FROM annotations WHERE id=?", (a["id"],)).fetchone()
+                if cur is not None and (cur["updated_at"] or 0) >= (a["updated_at"] or 0):
+                    continue
+                if blocks:
+                    res = resolve(Anchor(a["block_id"], a.get("start") or 0, a.get("end") or 0,
+                                         a.get("exact") or "", a.get("prefix") or "", a.get("suffix") or ""),
+                                  blocks, a.get("page"))
+                    a.update(block_id=res.block_id or a["block_id"], start=res.start, end=res.end,
+                             seq=res.seq, orphaned=1 if res.method == "orphaned" else 0)
+                a["book_id"] = book_id
+                cols = ", ".join(a.keys())
+                marks = ", ".join("?" for _ in a)
+                c.execute(f"INSERT OR REPLACE INTO annotations({cols}) VALUES ({marks})", tuple(a.values()))  # noqa: S608
+                stats["annotations_updated" if cur is not None else "annotations_added"] += 1
+            pos = entry.get("position")
+            if isinstance(pos, dict) and isinstance(pos.get("block_id"), str):
+                cur = c.execute("SELECT updated_at FROM positions WHERE book_id=?", (book_id,)).fetchone()
+                if cur is None or cur["updated_at"] < float(pos.get("updated_at") or 0):
+                    c.execute(
+                        "INSERT OR REPLACE INTO positions(book_id, block_id, seq, progress, updated_at) VALUES (?,?,?,?,?)",
+                        (book_id, pos["block_id"], int(pos.get("seq") or 0), float(pos.get("progress") or 0),
+                         float(pos.get("updated_at") or 0)),
+                    )
+    return stats
