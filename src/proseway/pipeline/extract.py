@@ -256,7 +256,7 @@ def _build_line(chars: list[dict]) -> dict | None:
                 cur_style = style
                 style_start = length
         # Soft hyphens inside a line are invisible break hints; drop them.
-        t = t.replace("­", "") if not t == "­" else t
+        t = t.replace("­", "") if t != "­" else t
         text_parts.append(t)
         length += len(t)
         last_visible = length
@@ -456,12 +456,22 @@ def _extract_page_pdfium(src: Source, index: int, assets_dir: Path, ocr=None) ->
     images = _merge_overlapping(images)
     n_chars = sum(len(ln["t"]) for ln in lines)
     scanned = n_chars < 20 and covered > page_area * 0.5
+    images = _drop_scan_backgrounds(images, n_chars, page_area)
     tables = []
     if not scanned and n_paths >= 6:
         tables = _find_tables(src.plumber, index)
     result: dict[str, Any] = {"n": index + 1, "w": round(w, 2), "h": round(h, 2), "lines": lines,
                               "images": [], "tables": tables, "scanned": scanned, "ocr": False}
     return _finish_page(result, images, src.pdfium, index, assets_dir, ocr, w, h)
+
+
+def _drop_scan_backgrounds(images: list[dict], n_chars: int, page_area: float) -> list[dict]:
+    """A scanned page with an OCR text layer is a page-sized image under invisible text.
+
+    The text is the content; the image is not a figure."""
+    if n_chars < 200:
+        return images
+    return [im for im in images if (im["x1"] - im["x0"]) * (im["bot"] - im["top"]) < page_area * 0.7]
 
 
 def _merge_overlapping(images: list[dict]) -> list[dict]:
@@ -534,6 +544,7 @@ def _extract_page_plumber(plumber_pdf, pdfium_doc, index: int, assets_dir: Path,
 
         n_chars = sum(len(ln["t"]) for ln in lines)
         scanned = n_chars < 20 and covered > page_area * 0.5
+        images = _drop_scan_backgrounds(images, n_chars, page_area)
 
         tables = []
         if not scanned and len(page.lines) + len(page.rects) >= 6:

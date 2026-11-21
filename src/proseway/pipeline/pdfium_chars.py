@@ -146,7 +146,7 @@ def page_objects(page: pdfium.PdfPage) -> tuple[int, list[tuple[float, float, fl
         else:
             try:
                 left, bottom, right, top = obj.get_bounds()
-            except Exception:
+            except Exception:  # noqa: S112 - an object without bounds is simply skipped
                 continue
             images.append((left, h - top, right, h - bottom))
     return n_paths, images

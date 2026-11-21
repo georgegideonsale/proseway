@@ -178,6 +178,9 @@ def main() -> int:
             r["layer_order"] = round(Indel.normalized_similarity(ours, layer), 4) if layer else None
             if ref_tokens:
                 r["ref_recall"] = round(multiset_recall(ours, ref_tokens), 4)
+                # Share of our words that exist in the reference: OCR quality when the
+                # reference covers more than the PDF does.
+                r["ref_precision"] = round(multiset_recall(ref_tokens, ours), 4)
                 r["ref_similarity"] = round(Indel.normalized_similarity(ours, ref_tokens), 4)
             r["category"] = b["category"]
             results[f"{b['id']}|{engine}"] = r

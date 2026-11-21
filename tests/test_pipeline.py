@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import re
 
-import pdfgen
 import pytest
-from conftest import blocks, book_row, convert
 
+import pdfgen
+from conftest import blocks, book_row, convert
 from proseway.pipeline.layout import PAGE_NUMBER, running_key, should_join_hyphen
 
 ENGINES = ["pdfium", "plumber"]

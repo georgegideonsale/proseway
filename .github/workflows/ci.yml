@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.12"]
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install
+        run: |
+          uv sync --locked
+          pnpm --dir web install --frozen-lockfile
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type-check and build the web app
+        run: pnpm --dir web build
+      - name: Web unit tests
+        run: pnpm --dir web test
+      - name: Python tests
+        run: uv run pytest
+      - name: Browser tests
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: |
+          pnpm --dir web exec playwright install --with-deps chromium
+          pnpm --dir web e2e
+
+  build:
+    name: Build wheel
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm --dir web install --frozen-lockfile && pnpm --dir web build
+      - run: uv build
+      - name: Smoke-test the wheel in a clean environment
+        run: |
+          uv venv /tmp/smoke
+          uv pip install --python /tmp/smoke dist/*.whl
+          /tmp/smoke/bin/proseway --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "See CHANGELOG.md for what's new."

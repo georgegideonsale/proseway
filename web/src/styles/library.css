@@ -101,7 +101,9 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
   gap: var(--s-7) clamp(20px, 3vw, 40px);
-  align-items: end;
+  /* Every cover sits in the same 2:3 box anchored at the bottom, so covers share a shelf
+     line and titles start at the same height. */
+  align-items: start;
 }
 .book {
   display: grid;
@@ -230,8 +232,13 @@ img.cover {
   justify-content: space-between;
   gap: var(--s-1);
 }
+.book-meta-row > div:first-child {
+  min-width: 0;
+  flex: 1;
+}
 .book-meta-row .menu {
   margin: -8px -8px 0 0;
+  flex-shrink: 0;
 }
 .book-title {
   margin: 0;

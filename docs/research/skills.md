@@ -230,3 +230,24 @@ d246b026f4f29b5823a9cc857f9edf3d2507002e055e32040cadeaf3b38e0234  web-design-gui
 ```
 
 To update later: fetch the new SHA, `diff -r` it against the committed folder, read every changed line, then bump the `UPSTREAM` file.
+
+---
+
+## What was actually installed (2026-11-21)
+
+Six skills are copied into `.claude/skills/`. Each is pinned to the vetted commit, with an `UPSTREAM` file giving its source, plus the upstream licence. After copying, I grepped the folders again for `curl`, `wget`, `requests.`, `urllib` and `fetch(` and found nothing.
+
+| Skill | Source | Used for in this build |
+|---|---|---|
+| frontend-design | anthropics/skills @ e4bb5d9 | Choosing the visual direction (bookbinding motif, Literata with Atkinson Hyperlegible Next) and the self-critique pass on screenshots |
+| webapp-testing | anthropics/skills @ e4bb5d9 | Approach for the Playwright end-to-end tests. I changed `with_server.py` to send output to DEVNULL instead of PIPE, as the vetting suggested |
+| accessibility | addyosmani/web-quality-skills @ afa8da9 | Checklist for keyboard support, focus, contrast and ARIA in the reader |
+| test-driven-development | obra/superpowers @ 22f0b46 | Ground-truth tests for the pipeline (generated PDFs with known text) |
+| systematic-debugging | obra/superpowers @ 22f0b46 | Root-causing pipeline bugs: drop caps, broken font encodings, UTF-16 surrogates |
+| verification-before-completion | obra/superpowers @ 22f0b46 | Only reporting things as working after running them |
+
+Vetted but not copied into the repo:
+- **ui-ux-pro-max:** 3.7 MB of data I didn't need, after writing the design tokens by hand.
+- **web-design-guidelines:** the wrapper repo has no licence.
+- **impeccable:** downloads and runs a binary.
+- **caveman:** cuts output on purpose.

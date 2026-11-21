@@ -1,0 +1,60 @@
+name: Conversion problem
+description: Text came out wrong, out of order, missing, or with leftover headers or page numbers.
+labels: ["conversion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. Conversion reports are the most useful kind.
+        Please only link PDFs that are public domain or openly licensed. Don't attach books you can't share.
+  - type: input
+    id: source
+    attributes:
+      label: Where can we get the PDF?
+      description: A link to a public-domain or openly licensed copy (Internet Archive, Project Gutenberg, OpenStax, arXiv…). If you can't share it, describe the layout instead.
+    validations:
+      required: false
+  - type: input
+    id: pages
+    attributes:
+      label: Page number(s) in the original PDF
+      placeholder: "p. 47"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What the page says
+      description: Copy the relevant text from the PDF, or describe it.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What Proseway shows
+      description: Paste the converted text or attach a screenshot.
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of problem
+      multiple: true
+      options:
+        - Words missing or changed
+        - Wrong reading order (columns)
+        - Header, footer or page number left in
+        - Hyphenation not fixed, or fixed wrongly
+        - Footnotes
+        - Tables
+        - Figures or captions
+        - Equations
+        - Headings or table of contents
+        - Scanned page / OCR
+  - type: input
+    id: version
+    attributes:
+      label: Proseway version
+      description: Run `proseway --version`.
+    validations:
+      required: true

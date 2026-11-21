@@ -174,11 +174,33 @@ def remove_running_elements(pages: list[list[Line]], heights: list[float], body:
             # Repeats on at least two other pages within a window of +-8 pages, or on
             # a large share of the whole book.
             near = sum(1 for q in hits if q != p and abs(q - p) <= 8)
-            if near >= 2 or (len(hits) >= 4 and len(hits) >= 0.3 * len(pages)):
+            if near >= 2 or (len(hits) >= 4 and len(hits) >= 0.3 * len(pages)) or _fuzzy_running(
+                key, zone, p, zones
+            ):
                 drop.add(i)
                 removed["running_lines"] += 1
         out.append([ln for i, ln in enumerate(lines) if i not in drop])
     return out
+
+
+def _fuzzy_running(key: str, zone: str, p: int, zones: list[list[tuple[int, str, str]]]) -> bool:
+    """Scanned books with an OCR text layer spell their running heads slightly differently on
+    every page ("THE DECLINE AND FALL" / "TIIE DECLINE AND FALL"). Accept near-matches in the
+    same margin on pages of the same parity (recto/verso) nearby."""
+    from rapidfuzz import fuzz
+
+    if len(key) < 8:
+        return False
+    matches = 0
+    for q in (p - 2, p + 2, p - 4, p + 4, p - 1, p + 1):
+        if 0 <= q < len(zones):
+            for _i, z, k in zones[q]:
+                if z == zone and len(k) >= 8 and fuzz.ratio(key, k) >= 75:
+                    matches += 1
+                    break
+        if matches >= 2:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +427,9 @@ class Assembler:
         gap = cur.top - prev.bot
         if gap > gap_ref + cur.size * 0.55:
             return True
-        if abs(cur.size - prev.size) > max(prev.size * 0.15, 1.0):
+        # A change of type size starts a new paragraph only with some extra space as well:
+        # small caps and inline size changes keep the normal line spacing.
+        if abs(cur.size - prev.size) > max(prev.size * 0.15, 1.0) and gap > gap_ref + cur.size * 0.15:
             return True
         if cur.x0 > cur.col_x0 + cur.size * 0.8 and cur.x0 > prev.x0 + cur.size * 0.5:
             return True
@@ -463,7 +487,7 @@ class Assembler:
         prev: Line | None = self.open.lines[-1] if self.open is not None and self.open.lines else None
         vi = 0
         for idx, ln in enumerate(main):
-            while vi < len(visuals) and visuals[vi][0] <= ln.top and (ln.col != "right" or True):
+            while vi < len(visuals) and visuals[vi][0] <= ln.top:
                 self.emit(visuals[vi][1])
                 vi += 1
                 prev = None
@@ -508,9 +532,7 @@ class Assembler:
                 self.start("list_item", ln)
             else:
                 o = self.open
-                if o is not None and o.type in ("paragraph", "list_item", "caption") and prev is not None and not self.paragraph_break(prev, ln, gap_ref):
-                    self._append_text(o, ln)
-                elif o is not None and o.type in ("paragraph", "list_item") and prev is None and o.lines and not self.paragraph_break(o.lines[-1], ln, gap_ref):
+                if o is not None and o.type in ("paragraph", "list_item", "caption") and prev is not None and not self.paragraph_break(prev, ln, gap_ref) or o is not None and o.type in ("paragraph", "list_item") and prev is None and o.lines and not self.paragraph_break(o.lines[-1], ln, gap_ref):
                     self._append_text(o, ln)
                 else:
                     self.start("paragraph", ln)
