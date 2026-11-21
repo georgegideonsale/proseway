@@ -26,5 +26,5 @@ First release.
 - **Phone reading:** over the home network, with QR or code pairing, revocable devices and an automatic switch-off.
 - **Security:** Host-header and CSRF protection, a strict Content Security Policy, and local-only management endpoints.
 
-[Unreleased]: https://github.com/george-gideon-S/proseway/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/george-gideon-S/proseway/releases/tag/v0.1.0
+[Unreleased]: https://github.com/georgegideonsale/proseway/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/georgegideonsale/proseway/releases/tag/v0.1.0

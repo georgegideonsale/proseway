@@ -39,8 +39,8 @@ https = ["cryptography>=42"]
 proseway = "proseway.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/george-gideon-S/proseway"
-Issues = "https://github.com/george-gideon-S/proseway/issues"
+Homepage = "https://github.com/georgegideonsale/proseway"
+Issues = "https://github.com/georgegideonsale/proseway/issues"
 
 [dependency-groups]
 dev = [

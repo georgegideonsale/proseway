@@ -41,13 +41,13 @@ You need **Python 3.10 or newer**. The easiest way to install Python tools is [u
 From a release (no other tools needed):
 
 ```sh
-uv tool install https://github.com/george-gideon-S/proseway/releases/download/v0.1.0/proseway-0.1.0-py3-none-any.whl
+uv tool install https://github.com/georgegideonsale/proseway/releases/download/v0.1.0/proseway-0.1.0-py3-none-any.whl
 ```
 
 From source (also needs [Node.js 20+](https://nodejs.org/) to build the reader):
 
 ```sh
-uv tool install git+https://github.com/george-gideon-S/proseway
+uv tool install git+https://github.com/georgegideonsale/proseway
 ```
 
 Then run it:

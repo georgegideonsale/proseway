@@ -17,7 +17,7 @@ Thanks for helping. Proseway is small and opinionated: it should stay local-only
 You need Python 3.10+ with [uv](https://docs.astral.sh/uv/), Node.js 20+, and [pnpm](https://pnpm.io/).
 
 ```sh
-git clone https://github.com/george-gideon-S/proseway
+git clone https://github.com/georgegideonsale/proseway
 cd proseway
 uv sync                      # Python deps, including dev tools
 pnpm --dir web install       # web app deps

@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security problem
-    url: https://github.com/george-gideon-S/proseway/security/advisories/new
+    url: https://github.com/georgegideonsale/proseway/security/advisories/new
     about: Please report security issues privately.
