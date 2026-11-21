@@ -213,6 +213,12 @@ def test_dedupe_keeps_text_at_another_size():
     pair = [{"t": note, "x0": 72.0, "x1": 200.0, "top": 100.0, "bot": 106.0, "sz": 6.0},
             {"t": "Ibid.", "x0": 72.0, "x1": 96.0, "top": 98.0, "bot": 109.0, "sz": 11.0}]
     assert _drop_shadow_lines(pair) == pair
+    # Gibbon p260: a squeezed OCR layer sets the "ff" of "difference" as two 0.86 pt boxes
+    # side by side, within a point of each other. Both letters are real.
+    squeezed = [dict(ch, x0=x, x1=x + w) for ch, x, w in
+                zip(chars("diff", 0, 209, 9.0), (77.0, 77.9, 78.59, 79.45), (0.9, 0.69, 0.86, 0.86), strict=True)]
+    counts = Counter()
+    assert lines_from_chars(squeezed, counts)[0]["t"] == "diff" and not counts
     # A same-size copy drawn a point off is still a shadow, and is counted.
     shadow = chars("Seed tasks", 300, 100, 10.0) + chars("Seed tasks", 301, 101, 10.0)
     counts = Counter()
@@ -270,17 +276,32 @@ def test_framed_note_and_caption_lines_stay_in_the_flow():
     assert figs[0]["bot"] < 255
 
 
+def test_scan_layer_detection():
+    """Total image coverage decides, not one page-sized image; a few words are enough."""
+    from proseway.pipeline.extract import _is_scan_layer
+
+    w, h = 612.0, 792.0
+    strips = [(0.0, k * h / 3, w, (k + 1) * h / 3) for k in range(3)]
+    assert _is_scan_layer(25, strips, w, h)  # a sparse title page tiled into strips
+    assert _is_scan_layer(25, [(10.0, 20.0, 600.0, 700.0)], w, h)  # cropped a little: 82% of the page
+    assert not _is_scan_layer(0, strips, w, h)  # no text layer at all
+    assert not _is_scan_layer(900, [(72.0, 72.0, 540.0, 400.0)], w, h)  # a page with a figure
+    assert not _is_scan_layer(900, [(-500.0, 0.0, 300.0, 792.0)], w, h)  # mostly off the page: 49%
+
+
+@pytest.mark.parametrize("strips", [1, 3])
 @pytest.mark.parametrize("engine", ENGINES)
-def test_scan_text_layer_is_read_as_plain_text(lib, tmp_path, engine, monkeypatch):
-    """A scan with the scanner's own OCR text layer: its contents list is not taken for a
-    table, and nothing is dropped as a duplicate where OCR boxes overlap."""
+def test_scan_text_layer_is_read_as_plain_text(lib, tmp_path, engine, strips, monkeypatch):
+    """A scan with the scanner's own OCR text layer, the page image whole or tiled into
+    three strips: its contents list is not taken for a table, and nothing is dropped as a
+    duplicate where OCR boxes overlap."""
     paths, db = lib
     pdf = tmp_path / "layer.pdf"
-    pdfgen.make_scan_with_text_layer(pdf, pages=2)
+    pdfgen.make_scan_with_text_layer(pdf, pages=2, strips=strips)
     bid = convert(paths, db, pdf, engine, monkeypatch)
     assert book_row(db, bid)["status"] == "ready"
     out = blocks(db, bid)
-    assert not [b for b in out if b["type"] == "table"]
+    assert not [b for b in out if b["type"] in ("table", "figure")]  # the strips are the scan, not figures
     joined = norm(" ".join(b["text"] for b in out))
     for line in pdfgen.SCAN_LAYER_BODY:
         assert norm(line) in joined

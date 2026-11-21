@@ -375,9 +375,15 @@ def _same_size(a: float, b: float) -> bool:
 
 
 def _same_glyph_spot(c: dict, first: dict) -> bool:
+    """Is `c` drawn over `first`? Same size, within a point, and covering at least half of
+    its width: two narrow letters side by side (the "ff" of a squeezed OCR layer, 0.86 pt
+    wide each and 0.86 pt apart) are a pair of letters, not a copy."""
+    w = min(c["x1"] - c["x0"], first["x1"] - first["x0"])
+    overlap = min(c["x1"], first["x1"]) - max(c["x0"], first["x0"])
     return (_same_size(c.get("size", 0.0), first.get("size", 0.0))
             and abs(c["x0"] - first["x0"]) <= 1.0 and abs(c["top"] - first["top"]) <= 1.0
-            and abs((c["x1"] - c["x0"]) - (first["x1"] - first["x0"])) <= 1.0)
+            and abs((c["x1"] - c["x0"]) - (first["x1"] - first["x0"])) <= 1.0
+            and w > 0 and overlap >= 0.5 * w)
 
 
 def _untangle(seg: list[dict]) -> list[list[dict]]:
@@ -629,7 +635,7 @@ def _extract_page_pdfium(src: Source, index: int, assets_dir: Path, ocr=None) ->
     finally:
         page.close()
     page_area = w * h
-    scan_layer = _is_scan_layer(len(chars), image_boxes, page_area)
+    scan_layer = _is_scan_layer(sum(1 for c in chars if (c.get("text") or "").strip()), image_boxes, w, h)
     counts: Counter = Counter()
     lines = lines_from_chars(chars, counts, scan_layer)
     graphics = path_boxes + image_boxes
@@ -659,10 +665,17 @@ def _extract_page_pdfium(src: Source, index: int, assets_dir: Path, ocr=None) ->
     return _finish_page(result, images, src.pdfium, index, assets_dir, ocr, w, h)
 
 
-def _is_scan_layer(n_chars: int, image_boxes: list, page_area: float) -> bool:
-    """A scanned page with its own OCR text layer: plenty of text over a page-sized image."""
-    return n_chars >= 200 and any(
-        max(b[2] - b[0], 0.0) * max(b[3] - b[1], 0.0) >= page_area * 0.7 for b in image_boxes)
+def _is_scan_layer(n_chars: int, image_boxes: list, w: float, h: float) -> bool:
+    """A scanned page with its own OCR text layer: text over images that, together, cover
+    most of the page. Scanners may tile a page into strips or crop it a little, and a
+    sparse page (a title, a plate) carries only a few words, so neither one page-sized
+    image nor a minimum amount of text is required."""
+    if n_chars == 0:
+        return False
+    covered = 0.0
+    for x0, top, x1, bot in image_boxes:
+        covered += max(min(x1, w) - max(x0, 0.0), 0.0) * max(min(bot, h) - max(top, 0.0), 0.0)
+    return covered >= 0.7 * w * h
 
 
 def _note_passes(result: dict, counts: Counter, scan_layer: bool) -> None:
@@ -675,9 +688,13 @@ def _note_passes(result: dict, counts: Counter, scan_layer: bool) -> None:
 def _drop_scan_backgrounds(images: list[dict], n_chars: int, page_area: float) -> list[dict]:
     """A scanned page with an OCR text layer is a page-sized image under invisible text.
 
-    The text is the content; the image is not a figure."""
+    The text is the content; the image is not a figure. Some scans store the page as a few
+    strips; together they cover the page, and none of them is a figure either. (A sparse
+    page, such as a plate with a caption, keeps its image.)"""
     if n_chars < 200:
         return images
+    if sum((im["x1"] - im["x0"]) * (im["bot"] - im["top"]) for im in images) >= page_area * 0.7:
+        return [im for im in images if (im["x1"] - im["x0"]) * (im["bot"] - im["top"]) < page_area * 0.1]
     return [im for im in images if (im["x1"] - im["x0"]) * (im["bot"] - im["top"]) < page_area * 0.7]
 
 
@@ -1157,7 +1174,7 @@ def _extract_page_plumber(plumber_pdf, pdfium_doc, index: int, assets_dir: Path,
         page_area = w * h
         image_boxes = [(float(im["x0"]) - x_off, float(im["top"]) - y_off, float(im["x1"]) - x_off,
                         float(im["bottom"]) - y_off) for im in page.images]
-        scan_layer = _is_scan_layer(len(chars), image_boxes, page_area)
+        scan_layer = _is_scan_layer(sum(1 for c in chars if (c.get("text") or "").strip()), image_boxes, w, h)
         counts: Counter = Counter()
         lines = lines_from_chars(chars, counts, scan_layer)
 

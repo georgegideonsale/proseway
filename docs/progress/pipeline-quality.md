@@ -112,8 +112,16 @@ covered by either.
 **2. Passes that delete words.** Both de-duplication passes now count what they drop, in
 `stats.removed` as `overprint_glyphs` and `shadow_lines`. Each page's JSON carries a
 `dropped` count, and `assemble` sums them.
-- `_dedupe_overprint` only drops a glyph that has the same text, the same size (within
-  10%) and the same width as the first copy, within 1 pt of it.
+- `_dedupe_overprint` only drops a glyph that has all of these, compared with the first
+  copy:
+  - the same text;
+  - the same size (within 10%) and the same width;
+  - a position within 1 pt;
+  - overlap with it of at least half its width.
+
+  The last condition came from the second review: Gibbon p260's squeezed OCR layer sets
+  the "ff" of "difference" as two 0.86 pt boxes 0.86 pt apart. That is within 1 pt, so
+  one f was dropped. See "Gibbon, traced" below.
 - `_drop_shadow_lines` only drops a line when all of these hold:
   - it is within 20% of the other line's size;
   - its top is within 0.6 of a line height of the other's;
@@ -161,18 +169,26 @@ flow again, as on main, instead of figure images. A whole-book diff of figure de
 against `c686c1e` shows only those three pages changed: Intro Stats `figure_text` went
 from 54 words to 11, the labels of p34's dice chart. Self-Instruct keeps all 10 figures.
 
-**5. Scan text layers.** A page with 200+ characters over an image covering 70%+ of it is
-a scan with its own OCR layer (`_is_scan_layer`; page JSON `scan_layer: true`). On those
-pages extraction skips three things:
+**5. Scan text layers.** A page whose images together cover 70%+ of it (clipped to the
+page), with any text at all, is a scan with its own OCR layer (`_is_scan_layer`; page
+JSON `scan_layer: true`). Since the second review, total coverage counts, so a scan tiled
+into strips or cropped a little qualifies, and so does a sparse title page or plate. The
+first version needed one image over 70% and 200+ characters. On a text-bearing scan page
+(200+ characters), the strips are also dropped as the scan background, as a single page
+image already was. On those pages extraction skips three things:
 - the gutter finder;
 - untangling of overlapping runs;
 - shadow-line dropping.
 
 Layout also skips text-table detection there, as it already did on pages we OCR ourselves.
 Main had none of these passes, so such pages now behave exactly as on main, except that
-overprint de-duplication still runs with its new guards. Covered by
-`test_scan_text_layer_is_read_as_plain_text` (both engines): its contents list is aligned
-in three columns and is not a table.
+overprint de-duplication still runs with its new guards. Tests:
+- `test_scan_text_layer_is_read_as_plain_text` runs on both engines, with the page image
+  whole and tiled into 3 strips. Its contents list is aligned in three columns and is not a
+  table, and neither the image nor the strips become figures.
+- `test_scan_layer_detection` covers strips, a cropped scan, a sparse page, no text, an
+  ordinary figure, and an image mostly off the page.
+- The strip cases fail on `93543c4`.
 
 **6. `FakeOcr`.** Ported from the duplicate branch (`tests/pdfgen.py`: `fake_ocr_lines`,
 `FakeOcr`, `make_image_scan`). `test_ocr_pages_lose_watermarks_and_noisy_headings` runs on
@@ -202,7 +218,7 @@ from a `git archive` of `main` (2093049, whose pipeline is identical to `bff9f42
 
 | Book | Main: recall / order / ref sim | This branch: recall / order / ref sim | Blocks main → branch | Time main → branch |
 |---|---|---|---:|---:|
-| Gibbon vol. 1 (scan, own OCR layer) | 0.9616 / 0.7210 / 0.6455 | 0.9616 / 0.7210 / 0.6455 | 4,955 → 4,951 | 108.0 → 85.2 s |
+| Gibbon vol. 1 (scan, own OCR layer) | 0.9616 / 0.7210 / 0.6455 | 0.9616 / 0.7210 / 0.6455 | 4,955 → 4,951 | 108.0 → 93.3 s |
 | University Physics 1 | 0.9682 / 0.9539 / – | **0.9693 / 0.9569** / – | 17,319 → 16,998 | 319.3 → 332.5 s |
 | *Pride and Prejudice* | 0.9506 / 0.9671 / 0.9683 | 0.9506 / 0.9671 / 0.9683 | 2,087 → 2,087 | 45.6 → 25.9 s |
 | *Sleepy Hollow* | 0.9456 / 0.9637 / 0.9748 | 0.9477 / 0.9634 / 0.9734 | 78 → 79 | 3.6 → 3.1 s |
@@ -212,15 +228,11 @@ from a `git archive` of `main` (2093049, whose pipeline is identical to `bff9f42
 | *Trifles* (OCR) | – / – / 0.1365 (precision 0.8521) | – / – / 0.1366 (precision **0.8585**) | 284 → 234 | 228.3 → 140.0 s |
 
 What the review-pass numbers show:
-- **Gibbon:**
+- **Gibbon** (re-run after the second review's fixes):
   - Every accuracy metric is identical to main: layer recall and order, and reference
     similarity, recall (0.9038) and precision (0.8905). The word count is identical too
     (272,366).
-  - `stats.removed` has no `text_tables` entry. Every one of its 652 pages took the
-    scan-layer or OCR path, so the gutter, untangle, shadow and text-table passes never ran
-    on it.
-  - Only `overprint_glyphs: 5` was dropped. There are 4 fewer blocks with exactly the same
-    words; I didn't trace which paragraphs regrouped.
+  - `overprint_glyphs: 4`. The blocks are traced below.
 - **Physics:**
   - Layer recall and order both rose.
   - 55 text tables were found.
@@ -240,6 +252,43 @@ What the review-pass numbers show:
   - Pride, Erdős and Physics: zero of both.
 - **Times** are as noisy as before. The main Gibbon and Physics runs overlapped with my test
   runs; the branch runs had the machine to themselves.
+
+### Gibbon, traced
+
+I converted the book exactly as `convert.py` does (our OCR on the 12 image-only pages),
+with main's code and with this branch's. I logged every glyph the overprint pass dropped
+and diffed the two block lists.
+- **Which path each page took.** 642 pages are scan-layer pages and 12 are pages we OCR
+  ourselves. The list of pages that took neither path is empty. So the gutter, untangle,
+  shadow and text-table passes ran on no Gibbon page. (Since `_is_scan_layer` counts any
+  text, the image-only pages count as scan-layer as well as OCR.)
+- **Overprint drops, first version (5 glyphs).** One was a real letter:
+  - p260 dropped the second f of "difference". The two f boxes are x 78.59–79.45 and
+    79.45–80.32, at the same top and 9 pt, so they sit side by side, not on top of each
+    other. They were within the 1 pt tolerance, and the text came out as "diference".
+  - The fix is the half-width overlap condition. After it, p260 is identical to main, and
+    `test_dedupe_keeps_text_at_another_size` pins the case.
+- **Overprint drops, now (4 glyphs, all p564).** The OCR layer holds "of Memphis" twice,
+  on top of itself:
+  - `o` and `f` copies have identical boxes (114.30–116.72 and 116.72–119.13, top 194.81,
+    7 pt);
+  - `M` is 125.28–128.80 over 125.28–128.40;
+  - `m` is 132.32–135.83 over 131.51–134.63, a 66% overlap.
+  - Main reads the passage "ooff MMeemmpphhiis"; the branch reads "of Meempphhiis". The
+    remaining doubled letters overlap too little to be dropped.
+- **The 4 missing blocks** are all on pages 2–3. These are image-only pages with a library
+  bookplate, which our OCR reads as fragments: "5", "UBRARY", "-ANGEL", "写", "UNIVEI",
+  "S", "UNIVERSY", "5S", "8T".
+  - Main made headings of 8 of them.
+  - This branch's OCR heading guard rejects them for being short, mostly not letters, or
+    not clearly larger. As paragraphs, neighbouring fragments merge: "UBRARY -ANGEL 写",
+    "UNIVEI S", "UNIVERSY 5S". That is 11 blocks on main and 7 here.
+  - The only other block that differs is the p564 paragraph above (same block, fewer
+    doubled letters).
+- **The narrower overprint guard elsewhere.** Sleepy Hollow, Self-Instruct, *Pride and
+  Prejudice* and Intro Stats were re-run after the change. Their word and block counts,
+  metrics and counters are identical to the previous run (for example
+  `overprint_glyphs: 45` and `73`).
 
 **Not benchmarked:** the pdfplumber engine (only the tests run it), and any book outside
 the eight above. The test corpus has nothing like a title page with a drawn ornament or a
@@ -391,7 +440,8 @@ both.
 | `test_dedupe_keeps_text_at_another_size` | n/a (unit) | Review pass. An 11 pt "Ibid." over a 6 pt footnote line that starts "Ibid." keeps both lines, through `lines_from_chars` and through `_drop_shadow_lines`. A same-size copy 1 pt off is still dropped and counted. |
 | `test_title_in_an_ornament_stays_text` | n/a (unit) | Review pass. An 18 pt title inside a 42-shape ornament stays in the flow. |
 | `test_framed_note_and_caption_lines_stay_in_the_flow` | n/a (unit) | Review pass. A framed note in 7 pt sentences and a caption's second line stay in the flow, while the diagram beside them is still a figure with its labels. |
-| `test_scan_text_layer_is_read_as_plain_text` | both | Review pass. A page-sized scan with an invisible OCR layer: its contents list (aligned in three columns) is not a table, every word comes through, and no shadow lines or text tables are counted. |
+| `test_scan_text_layer_is_read_as_plain_text` | both × (1 image, 3 strips) | Review pass. A scan with an invisible OCR layer: its contents list (aligned in three columns) is not a table, the page image or strips are not figures, every word comes through, and no shadow lines or text tables are counted. |
+| `test_scan_layer_detection` | n/a (unit) | Second review. Total image coverage decides: strips, a cropped scan and a sparse page qualify; no text, an ordinary figure, or an image mostly off the page don't. |
 | `test_ocr_pages_lose_watermarks_and_noisy_headings` | both | Review pass, ported `FakeOcr`. Exact paragraphs and pages; one heading; no running head and no stamp reading. |
 | `test_ocr_scan_with_real_engine` | pdfium + RapidOCR | Renamed from `test_ocr_scan_end_to_end`; skipped without the add-on. |
 
@@ -404,7 +454,8 @@ running them with `PYTHONPATH` pointing at an archive of that commit.
 - a shaded, outlined sidebar of body-size prose stays a paragraph;
 - the caption follows its figure and is linked to it, and FTS search finds a label.
 
-`uv run pytest`: 63 passed (56 before the review pass). `uv run ruff check .`: clean.
+`uv run pytest`: 66 passed (56 before the review pass, 63 after the first review).
+`uv run ruff check .`: clean.
 
 ## What didn't improve, and what's left
 
@@ -429,6 +480,19 @@ running them with `PYTHONPATH` pointing at an archive of that commit.
 - **The table detector is off on OCR pages**, both ours and scans with their own OCR
   layer, where boxes are too uneven to read as a grid. Tables in Gibbon's scan come out as
   lines of text, as on main.
+- **Follow-ups from the second review** (logged, not fixed):
+  - **Framed prose depends on the frame.** A narrow note in 7 pt type, or a note with a
+    ~20-path icon, has short lines or more than 12 shapes. It can then fail
+    `prose_in_frame` and land in `figure_text`. This needs a fixture.
+  - **Centred two-line captions** aren't detected as caption continuations: the second
+    line must start within 2 em of the caption's left edge.
+  - **`stats.removed` isn't shown anywhere in the UI.** The per-page `dropped` counts live
+    in the cached page JSON and are lost when "Convert again" re-extracts.
+  - **The stamp rule for 1–3-page scans.** `min(3, pages // 4 + 1)` means one clear stamp
+    reading establishes the stamp on a scan of under 4 pages. After that, looser matches
+    near its position go too.
+  - **A weak test.** `test_ocr_scan_with_real_engine` checks headings with `all(...)`,
+    which also passes when there are no headings at all.
 - **Vector-drawn maths beside body text** (OpenStax Physics answer keys and worked
   examples) is not shown. The surrounding words are in the flow, but maths drawn as paths
   with no text layer has no picture, as on main. A fix would crop just the path clusters

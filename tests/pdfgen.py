@@ -432,16 +432,19 @@ SCAN_LAYER_CONTENTS = [["CHAP. I.", "The Extent of the Empire", "1"],
 SCAN_LAYER_NOTE = "Ibid. vol. i. p. 245, and the authorities collected there."
 
 
-def make_scan_with_text_layer(path: Path, pages: int = 2) -> None:
-    """A scanned book page with the scanner's own OCR text layer: a page-sized image and
-    invisible text over it. The layer has a contents list aligned in columns and a footnote."""
+def make_scan_with_text_layer(path: Path, pages: int = 2, strips: int = 1) -> None:
+    """A scanned book page with the scanner's own OCR text layer: the page image (whole, or
+    tiled into `strips` horizontal bands, as some scanners store it) and invisible text over
+    it. The layer has a contents list aligned in columns and a footnote."""
     from PIL import Image
     from reportlab.lib.utils import ImageReader
 
     c = canvas.Canvas(str(path), pagesize=letter)
     for _ in range(pages):
-        img = Image.new("L", (306, 396), 235)
-        c.drawImage(ImageReader(img), 0, 0, width=W, height=H)
+        band = H / strips
+        for k in range(strips):
+            img = Image.new("L", (306, max(1, int(396 / strips))), 235)
+            c.drawImage(ImageReader(img), 0, k * band, width=W, height=band)
         t = c.beginText()
         t.setTextRenderMode(3)  # invisible, like an OCR layer
         y = H - 220  # below the zone where a lone number reads as a page number
