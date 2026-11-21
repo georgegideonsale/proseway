@@ -366,6 +366,7 @@ def _merge_same_baseline(lines: list[Line]) -> list[Line]:
 
 EQ_NUMBER = re.compile(r"^\(\s*[\dA-Z]{1,4}(?:\.\d{1,3})?[a-z]?\s*\)$")
 TABLE_MATH = set("=∑∏∫∮√∂∇≤≥≠≈≡∈∉⊂⊃⊆⊇∪∩∀∃→⇒⇔")  # not ± or ×, which results tables use
+INDEX_ENTRY = re.compile(r"[^\W\d_].*,\s*\d{1,4}(?:\s*[-–,]\s*\d{1,4})*,?$")
 LIST_MARK = re.compile(r"^(?:[•◦▪▫‣⁃●○■□\-–—*]|\(?\d{1,3}[.)]|\(?[a-zA-Z][.)]|\(?[ivxIVX]{1,5}[.)])$")
 
 
@@ -508,6 +509,15 @@ def _is_table(run: list[list[Line]]) -> list[tuple[float, float]] | None:
     widths = [statistics.median(ln.width for ln in by_band[k]) for k in by_band]
     if len(bands) == 2 and max(widths) > 0.42 * table_w:
         return None  # two columns of running text
+    if sum(1 for ln in cells if INDEX_ENTRY.search(ln.text.strip())) >= 0.4 * len(cells):
+        return None  # a back-of-book index set in columns ("bar graph, 14")
+    band_w = [b - a for a, b in bands]
+    if min(band_w) >= 0.2 * table_w and max(band_w) <= 1.5 * min(band_w):
+        text = "".join(ln.text for ln in cells)
+        letters = sum(ch.isalpha() for ch in text)
+        digits = sum(ch.isdigit() for ch in text)
+        if letters >= 0.7 * max(letters + digits, 1):
+            return None  # evenly wide columns of words: an index or glossary set in columns
     return bands
 
 

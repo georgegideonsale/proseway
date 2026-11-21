@@ -160,6 +160,14 @@ def test_text_tables_and_display_maths():
     lines = [ln for ln in grid(equation) if ln.text]
     tables, rest = find_text_tables(lines)
     assert not tables and len(rest) == len(lines)
+    # A back-of-book index set in three columns is running text, not a table.
+    index = [["bar graph, 14", "critical value, 374", "F ratio, 745"],
+             ["Bernoulli Trial, 254", "cumulative, 327", "fair, 176"],
+             ["box plots, 96", "degrees of freedom, 569", "histogram, 77"],
+             ["Cluster Sampling, 45", "error bound, 460", "independent, 181, 189"]]
+    lines = grid(index)
+    tables, rest = find_text_tables(lines)
+    assert not tables and len(rest) == len(lines)
 
 
 def test_ligature_letters_are_not_taken_for_overprint():
