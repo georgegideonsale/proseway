@@ -1170,9 +1170,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-https = [
-    { name = "cryptography" },
-]
 ocr = [
     { name = "rapidocr-onnxruntime" },
 ]
@@ -1187,7 +1184,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cryptography", marker = "extra == 'https'", specifier = ">=42" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "pdfplumber", specifier = ">=0.11.4" },
     { name = "psutil", specifier = ">=5.9" },
@@ -1198,7 +1194,7 @@ requires-dist = [
     { name = "segno", specifier = ">=1.6" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["ocr", "https"]
+provides-extras = ["ocr"]
 
 [package.metadata.requires-dev]
 dev = [
