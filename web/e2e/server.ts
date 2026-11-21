@@ -23,13 +23,23 @@ export class Server {
     return `http://127.0.0.1:${this.port}`;
   }
 
+  log = "";
+
   async start() {
     this.proc = spawn(PY, ["-m", "proseway", "--no-browser", "--port", String(this.port), "--data-dir", this.dataDir], {
       cwd: ROOT,
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
     });
+    const collect = (d: Buffer) => {
+      this.log = (this.log + d.toString()).slice(-4000);
+    };
+    this.proc.stdout?.on("data", collect);
+    this.proc.stderr?.on("data", collect);
+    let exited = false;
+    this.proc.once("exit", () => (exited = true));
+    this.proc.once("error", (e) => (this.log += `\nspawn error: ${e.message} (python: ${PY})`));
     const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline && !exited) {
       try {
         const r = await fetch(`${this.url}/api/info`);
         if (r.ok) return;
@@ -38,7 +48,7 @@ export class Server {
       }
       await new Promise((r) => setTimeout(r, 250));
     }
-    throw new Error("server did not start");
+    throw new Error(`server did not start (python: ${PY})\n${this.log}`);
   }
 
   async stop() {

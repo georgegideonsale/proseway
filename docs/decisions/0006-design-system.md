@@ -31,4 +31,4 @@ Computed with the WCAG 2.x relative-luminance formula from the token values in `
 | accent text on bg (links) | 6.90 | 6.38 | 7.68 | 7.97 |
 | button text on accent | 7.49 | 7.62 | 8.37 | 7.66 |
 
-In the light themes, ink over every highlight colour is at least 8.3:1. The first pass had paper `ink-faint` at 4.49:1, so I darkened it.
+In the light themes, ink over every highlight colour is at least 8.3:1. Dark-theme highlights are translucent, so I measured them blended over the page colour: at least 5.1:1 in Night and 5.1:1 in Dusk. Dusk's yellow started at 4.09:1, so I lowered its opacity from 0.42 to 0.30, which brings it to 5.51:1. The first pass had paper `ink-faint` at 4.49:1, so I darkened it.

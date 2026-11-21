@@ -55,8 +55,10 @@ jobs:
         run: uv run pytest
       - name: Browser tests
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        shell: bash
         run: |
           pnpm --dir web exec playwright install --with-deps chromium
+          export PROSEWAY_PYTHON="$(uv run python -c 'import sys; print(sys.executable)')"
           pnpm --dir web e2e
 
   build:
@@ -87,6 +89,7 @@ jobs:
         with:
           name: dist
           path: dist/
+          retention-days: 14
 
   release:
     name: Release
