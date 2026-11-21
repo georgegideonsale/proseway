@@ -1,6 +1,10 @@
 // Proseway service worker: keeps the app shell and the chapters you've opened available
 // offline. It only ever talks to the Proseway server it was installed from.
-const VERSION = "proseway-v1";
+//
+// When the server says this phone isn't paired (401, for instance after it was unpaired on
+// the computer), every cache is dropped: cached chapters, notes and images must not outlive
+// the pairing. The server also sends Clear-Site-Data with that 401.
+const VERSION = "proseway-v2";
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -16,6 +20,10 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+function forget() {
+  return caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))));
+}
+
 function cacheable(url) {
   if (url.origin !== self.location.origin) return false;
   if (url.pathname.startsWith("/assets/")) return true;
@@ -28,8 +36,9 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
-  // Static build assets are content-hashed: cache first.
-  if (url.pathname.startsWith("/assets/") || /\/assets\/[^/]+\.(png|jpg)$/.test(url.pathname)) {
+  // Static build assets are content-hashed and public: cache first. Book images are book
+  // data, so they go network first below, like chapters.
+  if (url.pathname.startsWith("/assets/")) {
     event.respondWith(
       caches.match(req).then(
         (hit) =>
@@ -50,6 +59,8 @@ self.addEventListener("fetch", (event) => {
           if (res.ok) {
             const copy = res.clone();
             caches.open(VERSION).then((c) => c.put(req, copy));
+          } else if (res.status === 401) {
+            event.waitUntil(forget());
           }
           return res;
         })

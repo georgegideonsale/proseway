@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { SharingState } from "../types";
 import { Dialog } from "./Dialog";
@@ -41,7 +41,8 @@ function Fingerprint({ value }: { value: string }) {
   const groups: string[] = [];
   for (let i = 0; i < pairs.length; i += 4) groups.push(pairs.slice(i, i + 4).join(":"));
   return (
-    <code className="fingerprint" aria-label={`SHA-256 fingerprint ${pairs.join(" ")}`}>
+    <code className="fingerprint">
+      <span className="visually-hidden">SHA-256 fingerprint: </span>
       {groups.map((g, i) => (
         <span key={i}>{g}</span>
       ))}
@@ -58,6 +59,23 @@ export function SharingDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [qrKey, setQrKey] = useState(0);
+  // "Set up this phone" and "Done, show the pairing code" replace the view they're in, so focus
+  // moves to the new view's heading (which also announces it) instead of dropping to the page.
+  const viewHeading = useRef<HTMLHeadingElement>(null);
+  const moveFocus = useRef(false);
+
+  function switchView(setup: boolean) {
+    moveFocus.current = true;
+    setShowSetup(setup);
+    if (setup) setQrKey((k) => k + 1);
+  }
+
+  useEffect(() => {
+    if (moveFocus.current) {
+      moveFocus.current = false;
+      viewHeading.current?.focus();
+    }
+  }, [showSetup]);
 
   useEffect(() => {
     let alive = true;
@@ -138,25 +156,25 @@ export function SharingDialog({ onClose }: { onClose: () => void }) {
                 </div>
               </div>
               {state.secureAvailable && (
-                <label className="toggle share-secure">
-                  <input
-                    type="checkbox"
-                    checked={secure}
-                    aria-describedby="sh-secure-hint"
-                    onChange={(e) => {
-                      setSecure(e.target.checked);
-                      saveSecure(e.target.checked);
-                    }}
-                  />
-                  <span>
-                    Secure connection (recommended)
-                    <span id="sh-secure-hint" className="share-hint">
-                      Encrypts everything between your phone and this computer, and lets your phone add Proseway to its home
-                      screen and keep chapters for reading offline. Each phone has to trust Proseway's certificate once. We'll
-                      show you how.
-                    </span>
-                  </span>
-                </label>
+                <div className="share-secure">
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={secure}
+                      aria-describedby="sh-secure-hint"
+                      onChange={(e) => {
+                        setSecure(e.target.checked);
+                        saveSecure(e.target.checked);
+                      }}
+                    />
+                    <span>Secure connection (recommended)</span>
+                  </label>
+                  <p id="sh-secure-hint" className="share-hint">
+                    Encrypts everything between your phone and this computer, and lets your phone add Proseway to its home
+                    screen and keep chapters for reading offline. Each phone has to trust Proseway's certificate once. We'll
+                    show you how.
+                  </p>
+                </div>
               )}
             </>
           )}
@@ -196,48 +214,69 @@ export function SharingDialog({ onClose }: { onClose: () => void }) {
               )}
             </div>
             {setupQr ? (
-              <ol className="share-steps" aria-label="Set up a secure connection">
-                <li>Scan this code with your phone's camera. It opens a setup page on your Wi-Fi.</li>
-                <li>Download Proseway's certificate there and trust it. The page walks you through it on iPhone and Android.</li>
-                {state.ca && (
+              <div className="share-view">
+                <h3 className="share-view-title" tabIndex={-1} ref={viewHeading}>
+                  Set up this phone
+                </h3>
+                <ol className="share-steps">
+                  <li>Scan this code with your phone's camera. It opens a setup page on your Wi-Fi.</li>
+                  <li>Download Proseway's certificate there and trust it. The page walks you through it on iPhone and Android.</li>
+                  {state.ca && (
+                    <li>
+                      Your phone should show this fingerprint for the certificate. If it shows a different one, don't trust it.
+                      <Fingerprint value={state.ca.fingerprint} />
+                    </li>
+                  )}
                   <li>
-                    Your phone should show this fingerprint for the certificate. If it shows a different one, don't trust it.
-                    <Fingerprint value={state.ca.fingerprint} />
+                    Safer, if you can: send the certificate from this computer instead, for example by AirDrop or a USB
+                    cable.{" "}
+                    <a href="/api/sharing/ca.crt" download>
+                      Download the certificate
+                    </a>
+                    . The setup page isn't encrypted, so someone on the network could swap in a certificate of their own.
                   </li>
-                )}
-                <li>
-                  <button className="link-btn" onClick={() => setShowSetup(false)}>
-                    Done, show the pairing code
-                  </button>
-                </li>
-              </ol>
+                  <li>
+                    <button className="link-btn" onClick={() => switchView(false)}>
+                      Done, show the pairing code
+                    </button>
+                  </li>
+                </ol>
+              </div>
             ) : (
-              <ol className="share-steps">
-                <li>Connect your phone to the same Wi-Fi as this computer.</li>
-                {state.secure && (
+              <div className="share-view">
+                <h3 className="share-view-title" tabIndex={-1} ref={viewHeading}>
+                  Pair your phone
+                </h3>
+                <ol className="share-steps">
+                  <li>Connect your phone to the same Wi-Fi as this computer.</li>
+                  {state.secure && (
+                    <li>
+                      First time on this phone? Trust Proseway's certificate once.{" "}
+                      {state.setupUrl ? (
+                        <button className="link-btn" onClick={() => switchView(true)}>
+                          Set up this phone
+                        </button>
+                      ) : (
+                        <a className="link-btn" href="/api/sharing/ca.crt" download>
+                          Download the certificate
+                        </a>
+                      )}
+                    </li>
+                  )}
+                  <li>Scan the code with your phone's camera.</li>
                   <li>
-                    First time on this phone? Trust Proseway's certificate once.{" "}
-                    {state.setupUrl ? (
-                      <button className="link-btn" onClick={() => (setShowSetup(true), setQrKey((k) => k + 1))}>
-                        Set up this phone
-                      </button>
-                    ) : (
-                      <a className="link-btn" href="/api/sharing/ca.crt" download>
-                        Download the certificate
-                      </a>
-                    )}
+                    Or open <strong className="share-url">{state.url}</strong> and enter
+                    <span className="pair-code">
+                      <span className="visually-hidden">the code {state.pairing?.code.split("").join(" ")}</span>
+                      <span aria-hidden="true">
+                        {state.pairing?.code.slice(0, 3)}
+                        <span className="pair-code-gap" />
+                        {state.pairing?.code.slice(3)}
+                      </span>
+                    </span>
                   </li>
-                )}
-                <li>Scan the code with your phone's camera.</li>
-                <li>
-                  Or open <strong className="share-url">{state.url}</strong> and enter
-                  <span className="pair-code" aria-label={`code ${state.pairing?.code.split("").join(" ")}`}>
-                    {state.pairing?.code.slice(0, 3)}
-                    <span className="pair-code-gap" />
-                    {state.pairing?.code.slice(3)}
-                  </span>
-                </li>
-              </ol>
+                </ol>
+              </div>
             )}
           </div>
           <p className="share-meta">

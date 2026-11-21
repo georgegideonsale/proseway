@@ -389,7 +389,7 @@ def test_epub_language_is_und_without_pdf_metadata(client, book):
     assert 'xml:lang="und"' in chapter
 
 
-def test_epub_language_comes_from_the_pdf(client, app, tmp_path):
+def test_epub_language_comes_from_the_pdf(client, app, tmp_path, monkeypatch):
     import ctypes
 
     import pypdfium2 as pdfium
@@ -403,6 +403,13 @@ def test_epub_language_comes_from_the_pdf(client, app, tmp_path):
     doc.save(str(pdf))
     doc.close()
     book = import_and_convert(client, app, pdf)
+
+    # Export runs on the server's thread pool (and a paired phone can ask for it), so it must
+    # not use pdfium, which isn't thread-safe. Conversion is finished; any pdfium use now fails.
+    def no_pdfium(*_a, **_k):
+        raise AssertionError("EPUB export used pdfium")
+
+    monkeypatch.setattr(pdfium, "PdfDocument", no_pdfium)
     opf, chapter = _opf(client, book)
     assert "<dc:language>de-AT</dc:language>" in opf
     assert 'lang="de-AT"' in chapter

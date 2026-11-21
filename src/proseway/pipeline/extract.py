@@ -87,23 +87,11 @@ def read_metadata(path: Path) -> dict[str, Any]:
     """Title, author, page count and outline, using pdfium (fast, tolerant)."""
     doc = open_pdfium(path)
     try:
-        meta: dict[str, Any] = {"title": "", "author": "", "language": "", "pages": len(doc), "outline": []}
+        meta: dict[str, Any] = {"title": "", "author": "", "pages": len(doc), "outline": []}
         try:
             m = doc.get_metadata_dict()
             meta["title"] = (m.get("Title") or "").strip()
             meta["author"] = (m.get("Author") or "").strip()
-        except Exception:  # noqa: S110 - metadata is optional
-            pass
-        try:  # the document catalog's /Lang, e.g. "en-GB" (UTF-16LE with a terminating NUL)
-            import ctypes
-
-            import pypdfium2.raw as pdfium_c
-
-            n = pdfium_c.FPDFCatalog_GetLanguage(doc.raw, None, 0)
-            if 2 < n <= 256:
-                buf = (ctypes.c_ushort * (n // 2))()
-                pdfium_c.FPDFCatalog_GetLanguage(doc.raw, buf, n)
-                meta["language"] = bytes(buf).decode("utf-16-le", "ignore").rstrip("\x00").strip()
         except Exception:  # noqa: S110 - metadata is optional
             pass
         try:

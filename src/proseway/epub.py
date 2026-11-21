@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 from . import __version__
 from .db import Database
 from .paths import DataPaths
-from .pipeline import extract
 from .render import block_html, escape
 
 CSS = """
@@ -39,6 +38,27 @@ span.pagebreak { display: none; }
 LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*")
 
 
+def _pdf_language(path) -> str:
+    """The document catalog's /Lang entry.
+
+    Read with pdfminer (pure Python), not pdfium: EPUB export runs on the server's thread
+    pool and can be requested by a paired phone, and pdfium isn't thread-safe. Only the
+    trailer, cross-reference table and catalog are parsed; ``fallback=False`` stops pdfminer
+    from scanning the whole file when the cross-reference table is broken.
+    """
+    from pdfminer.pdfdocument import PDFDocument
+    from pdfminer.pdfparser import PDFParser
+    from pdfminer.pdftypes import resolve1
+    from pdfminer.utils import decode_text
+
+    with open(path, "rb") as fh:
+        doc = PDFDocument(PDFParser(fh), fallback=False)
+        lang = resolve1(doc.catalog.get("Lang"))
+    if isinstance(lang, bytes):
+        return decode_text(lang)
+    return lang if isinstance(lang, str) else ""
+
+
 def book_language(paths: DataPaths, book_id: str) -> str:
     """The PDF's declared language as a BCP 47 tag, or "und" (undetermined) if it has none.
 
@@ -46,8 +66,8 @@ def book_language(paths: DataPaths, book_id: str) -> str:
     pronounce and hyphenate the book incorrectly, which is worse than no tag.
     """
     try:
-        lang = extract.read_metadata(paths.original_pdf(book_id)).get("language", "")
-    except Exception:
+        lang = _pdf_language(paths.original_pdf(book_id))
+    except Exception:  # pdfminer raises many kinds of errors on unusual files; the tag is optional
         lang = ""
     lang = (lang or "").strip().replace("_", "-")
     return lang if len(lang) <= 35 and LANGUAGE_TAG.fullmatch(lang) else "und"

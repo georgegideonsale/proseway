@@ -6,7 +6,9 @@ Security model (see docs/decisions/0005-phone-sharing.md):
 * Turning it on binds one extra listener to the chosen private LAN address (never 0.0.0.0).
 * A phone must pair first: scan the QR code (one-time token in the URL fragment) or type the
   6-digit code. Pairing gives the phone a random device token in an HttpOnly, SameSite=Strict
-  cookie. Only a SHA-256 hash of the token is stored.
+  cookie. Only a SHA-256 hash of the token is stored. Tokens issued over HTTPS live in a
+  ``__Host-`` cookie and are hashed in their own domain, so a token that ever travelled in
+  clear text (plain-HTTP sharing) is never accepted on the HTTPS listener.
 * Every API request on the LAN listener needs a valid device cookie, and only reading and
   annotating endpoints are reachable from the LAN at all. Managing sharing, devices, imports,
   deletions and restore are local-only.
@@ -45,13 +47,24 @@ PAIRING_TTL = 300.0
 MAX_FAILURES = 8  # per device (client address) within the window
 MAX_GLOBAL_FAILURES = 30  # all devices together, then pairing locks until a new code
 FAILURE_WINDOW = 300.0
-COOKIE_NAME = "pw_device"
+COOKIE_NAME = "pw_device"  # plain HTTP
+SECURE_COOKIE_NAME = "__Host-pw_device"  # HTTPS: browsers enforce Secure, Path=/ and no Domain
 COOKIE_MAX_AGE = 180 * 24 * 3600
+# TLS 1.2 suites with forward secrecy and AEAD only (TLS 1.3 suites are always on). Without
+# this, uvicorn's default cipher string is "TLSv1".
+TLS_CIPHERS = "ECDHE+AESGCM:ECDHE+CHACHA20"
 CA_DOWNLOAD_NAME = "proseway-ca.crt"
 
 
-def hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+def hash_token(token: str, https: bool = False) -> str:
+    """The stored form of a device token. HTTPS tokens are hashed with a prefix, so the two
+    kinds can never be mistaken for each other (and plain-HTTP rows stay as they were)."""
+    data = ("https:" + token if https else token).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def cookie_name(https: bool) -> str:
+    return SECURE_COOKIE_NAME if https else COOKIE_NAME
 
 
 def lan_addresses() -> list[dict[str, str]]:
@@ -115,8 +128,10 @@ class SharingManager:
         self._setup_thread: threading.Thread | None = None
         self._timer: threading.Timer | None = None
         self.app = None  # set by the server factory
-        self.ssl_files: tuple[str, str] | None = None
-        self.cert_files = certs.CertFiles(cert_dir) if cert_dir is not None else None
+        self.cert_root = cert_dir
+        # The certificate the running HTTPS listener presents. The dialog and the setup page
+        # show and serve this CA, never whatever is on disk now.
+        self.issued: certs.Issued | None = None
 
     # -- listener control ------------------------------------------------------------
 
@@ -145,30 +160,36 @@ class SharingManager:
             raise ValueError("That address isn't a private network address of this computer.")
         with self._lock:
             self.disable()
+            if not 1 <= port <= 65535:
+                raise ValueError("That port number isn't valid.")
+            issued = None
             if secure:
-                if self.cert_files is None:
+                if self.cert_root is None:
                     raise ValueError("Secure connections aren't available here.")
-                self.ssl_files = certs.ensure_server_cert(self.cert_files, address)
-            else:
-                self.ssl_files = None
+                issued = certs.ensure_server_cert(self.cert_root, address)
             kwargs = {}
-            if self.ssl_files:
-                kwargs = {"ssl_certfile": self.ssl_files[0], "ssl_keyfile": self.ssl_files[1]}
+            if issued:
+                kwargs = {"ssl_certfile": issued.certfile, "ssl_keyfile": issued.keyfile,
+                          "ssl_ciphers": TLS_CIPHERS}
             inner = self.app
+            https = issued is not None
 
             async def lan_app(scope, receive, send):
                 # Requests on this listener are marked here, so "is this from the network?"
-                # never depends on comparing addresses or on mutable sharing state.
+                # and "did it come over HTTPS?" never depend on comparing addresses or on
+                # mutable sharing state.
                 scope = dict(scope)
                 scope["proseway.lan"] = True
+                scope["proseway.https"] = https
                 await inner(scope, receive, send)
 
             self._server, self._thread = self._start_listener(lan_app, address, port, "proseway-lan", **kwargs)
             s = self.state
             s.enabled, s.address, s.port = True, address, port
-            s.scheme = "https" if self.ssl_files else "http"
+            self.issued = issued
+            s.scheme = "https" if issued else "http"
             s.setup_port = 0
-            if self.ssl_files:
+            if issued and port + 1 <= 65535:
                 # Best effort: without it, the certificate can still be sent from the computer.
                 try:
                     self._setup_server, self._setup_thread = self._start_listener(
@@ -205,9 +226,19 @@ class SharingManager:
             self.state.enabled = False
             self.state.setup_port = 0
             self.state.pairing = None
+            self.issued = None
 
     def is_lan_request(self, scope: dict) -> bool:
         return bool(scope.get("proseway.lan"))
+
+    @staticmethod
+    def is_https_request(scope: dict) -> bool:
+        return bool(scope.get("proseway.https"))
+
+    def device_for(self, scope: dict, cookies: dict[str, str]) -> str | None:
+        """The paired device behind a LAN request: only the cookie for this scheme counts."""
+        https = self.is_https_request(scope)
+        return self.check_device(cookies.get(cookie_name(https)), https=https)
 
     def lan_host_ok(self, host_header: str) -> bool:
         s = self.state
@@ -222,12 +253,12 @@ class SharingManager:
         return f"http://{s.address}:{s.setup_port}/" if s.enabled and s.setup_port else ""
 
     def ca_info(self) -> dict | None:
-        return certs.ca_info(self.cert_files) if self.cert_files is not None else None
+        issued = self.issued
+        return issued.ca_info if issued is not None else None
 
-    def ca_der(self) -> bytes:
-        if self.cert_files is None:
-            raise ValueError("no certificate folder")
-        return certs.ca_der(self.cert_files)
+    def ca_der(self) -> bytes | None:
+        issued = self.issued
+        return issued.ca_der if issued is not None else None
 
     # -- the plain-HTTP certificate setup page ------------------------------------------
 
@@ -251,8 +282,8 @@ class SharingManager:
                 status, body = 421, b"Unexpected host."
             elif method not in ("GET", "HEAD"):
                 status, body = 405, b"Method not allowed."
-            elif path == "/" + CA_DOWNLOAD_NAME:
-                status, ctype, body = 200, "application/x-x509-ca-cert", manager.ca_der()
+            elif path == "/" + CA_DOWNLOAD_NAME and (der := manager.ca_der()):
+                status, ctype, body = 200, "application/x-x509-ca-cert", der
                 extra = [(b"content-disposition", f'attachment; filename="{CA_DOWNLOAD_NAME}"'.encode())]
             elif path == "/":
                 info = manager.ca_info() or {}
@@ -299,7 +330,7 @@ class SharingManager:
                     return None
             return p
 
-    def pair(self, secret: str, device_name: str, client: str = "?") -> str | None:
+    def pair(self, secret: str, device_name: str, client: str = "?", https: bool = False) -> str | None:
         """Exchange a pairing code or token for a device token. Returns None on failure."""
         with self._lock:
             s = self.state
@@ -328,15 +359,15 @@ class SharingManager:
             with self.db.connect() as c:
                 c.execute(
                     "INSERT INTO devices(id, name, token_hash, created_at, last_seen) VALUES (?,?,?,?,?)",
-                    (uuid.uuid4().hex, device_name[:80] or "Phone", hash_token(token), now(), now()),
+                    (uuid.uuid4().hex, device_name[:80] or "Phone", hash_token(token, https), now(), now()),
                 )
             self.new_pairing()
             return token
 
-    def check_device(self, token: str | None) -> str | None:
+    def check_device(self, token: str | None, https: bool = False) -> str | None:
         if not token or len(token) > 200:
             return None
-        h = hash_token(token)
+        h = hash_token(token, https)
         with self.db.connect() as c:
             row = c.execute("SELECT id, last_seen FROM devices WHERE token_hash=?", (h,)).fetchone()
             if row is None:
@@ -366,7 +397,7 @@ class SharingManager:
             "url": self.url() if s.enabled else "",
             "scheme": s.scheme,
             "secure": s.enabled and s.scheme == "https",
-            "secureAvailable": self.cert_files is not None,
+            "secureAvailable": self.cert_root is not None,
             "setupUrl": self.setup_url(),
             "ca": self.ca_info(),
             "expiresAt": s.expires_at if s.enabled else None,
@@ -401,6 +432,11 @@ the home screen, and keep the chapters you have opened for offline reading.</p>
 <p class="note">Certificate: <strong>{name}</strong><br>SHA-256 fingerprint:<br><code>{fingerprint}</code><br>
 Check that it matches the fingerprint Proseway shows on your computer. If it doesn't, don't install it:
 someone on this network may be tampering with the connection.</p>
+<p class="note"><strong>Why this matters:</strong> this page comes over an unencrypted connection. If someone
+swapped the certificate, theirs would have none of the limits Proseway's has: your phone would trust them for
+<em>every</em> website, so they could read and change everything it opens. If you can, send the certificate
+from your computer instead (by AirDrop, a USB cable or a file share); Proseway's sharing window has a
+download link.</p>
 <h2>iPhone and iPad</h2>
 <ol>
 <li>Open this page in <strong>Safari</strong>, tap <em>Download the certificate</em>, then <em>Allow</em>.</li>
@@ -421,7 +457,8 @@ settings &rarr; Encryption &amp; credentials &rarr; Install a certificate &rarr;
 <h2>Then</h2>
 <p>Open <a href="{https_url}">{https_url}</a> and enter the code shown on your computer, or scan the
 pairing code again.</p>
-<p class="note">This certificate can only vouch for home-network addresses, never for websites.
+<p class="note">This certificate can only vouch for this one address on your network, never for
+websites or other devices.
 You can remove it at any time in the same settings.</p>
 </body></html>
 """

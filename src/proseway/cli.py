@@ -49,13 +49,11 @@ def main(argv: list[str] | None = None) -> int:
         from . import certs
 
         data_dir = (args.data_dir or default_data_dir()).expanduser().resolve()
-        files = certs.CertFiles(data_dir / "certs")
-        for p in (files.ca_cert, files.ca_key, files.server_cert, files.server_key):
-            p.unlink(missing_ok=True)
-        cert, _key = certs.ensure_ca(files)
-        print("  Made a new certificate for secure phone sharing.")
-        print(f"  SHA-256 fingerprint: {certs.fingerprint(cert)}")
-        print("  Remove the old Proseway certificate from your phones, then trust this one.")
+        removed = certs.remove_all(data_dir / "certs")
+        print(f"  Removed {removed} certificate{'' if removed == 1 else 's'} for secure phone sharing.")
+        print("  A new one is made the next time you turn on secure sharing. Remove the old Proseway")
+        print("  certificate from your phones, then trust the new one.")
+        print("  If Proseway is running with sharing on, turn sharing off and on again.")
         return 0
 
     import uvicorn

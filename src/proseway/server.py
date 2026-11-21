@@ -21,7 +21,7 @@ from .db import Database, now
 from .jobs import JobManager
 from .paths import DataPaths
 from .pipeline import errors, ocr
-from .sharing import COOKIE_MAX_AGE, COOKIE_NAME, SharingManager
+from .sharing import COOKIE_MAX_AGE, SharingManager, cookie_name
 
 log = logging.getLogger(__name__)
 
@@ -184,9 +184,14 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
             if path.startswith("/api/"):
                 public = any(m == method and rx.match(path) for m, rx in LAN_PUBLIC)
                 if not public:
-                    device = sharing.check_device(request.cookies.get(COOKIE_NAME))
+                    device = sharing.device_for(request.scope, request.cookies)
                     if device is None:
-                        return _error(401, "This device isn't paired yet.", "not_paired")
+                        resp = _error(401, "This device isn't paired yet.", "not_paired")
+                        # An unpaired (or unpaired-from-the-computer) phone shouldn't keep
+                        # cached chapters, notes and images. Browsers only honour this over
+                        # HTTPS, which is also the only place the offline cache exists.
+                        resp.headers["Clear-Site-Data"] = '"cache", "storage"'
+                        return resp
                     if not any(m == method and rx.match(path) for m, rx in LAN_ALLOWED):
                         return _error(403, "That can only be done on the computer running Proseway.", "local_only")
                     request.state.device = device
@@ -243,8 +248,11 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
         }
 
     @app.get("/api/session")
-    def session(request: Request) -> dict[str, Any]:
-        paired = bool(sharing.check_device(request.cookies.get(COOKIE_NAME))) if request.state.is_lan else True
+    def session(request: Request, response: Response) -> dict[str, Any]:
+        paired = bool(sharing.device_for(request.scope, request.cookies)) if request.state.is_lan else True
+        if not paired:
+            # The first thing the app asks; an unpaired phone drops any offline copies here.
+            response.headers["Clear-Site-Data"] = '"cache", "storage"'
         return {"listener": "lan" if request.state.is_lan else "local", "paired": paired}
 
     # ------------------------------------------------------------------ books
@@ -617,7 +625,10 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
     def sharing_ca():
         # Local only (not in LAN_ALLOWED): for sending the certificate to a phone some other
         # way, such as AirDrop or a USB cable, instead of the plain-HTTP setup page.
-        return Response(sharing.ca_der(), media_type="application/x-x509-ca-cert",
+        der = sharing.ca_der()
+        if der is None:
+            raise HTTPException(404, "Secure sharing is off.")
+        return Response(der, media_type="application/x-x509-ca-cert",
                         headers={"Content-Disposition": _attachment(sharing_mod.CA_DOWNLOAD_NAME)})
 
     @app.get("/api/sharing/qr.svg")
@@ -652,13 +663,16 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
         ua = request.headers.get("user-agent", "")
         name = _device_name(ua)
         client = request.client.host if request.client else "?"
-        token = sharing.pair(str(body.get("secret", ""))[:100], name, client)
+        https = sharing.is_https_request(request.scope)
+        token = sharing.pair(str(body.get("secret", ""))[:100], name, client, https=https)
         if token is None:
             return _error(403, "That code didn't work. Check the code on your computer, or ask it for a new one.",
                           "bad_code")
         resp = JSONResponse({"ok": True})
-        resp.set_cookie(COOKIE_NAME, token, max_age=COOKIE_MAX_AGE, httponly=True, samesite="strict",
-                        secure=sharing.state.scheme == "https", path="/")
+        # Over HTTPS the name carries the __Host- prefix: browsers then insist on Secure,
+        # Path=/ and no Domain, and a plain-HTTP page can't set or overwrite it.
+        resp.set_cookie(cookie_name(https), token, max_age=COOKIE_MAX_AGE, httponly=True, samesite="strict",
+                        secure=https, path="/")
         return resp
 
     # ------------------------------------------------------------------ web app

@@ -489,19 +489,35 @@ img.cover {
   color: var(--ink-faint) !important;
   margin-top: var(--s-4) !important;
 }
-.toggle.share-secure {
-  align-items: flex-start;
+.share-secure {
   margin-top: var(--s-4);
+}
+.share-secure .toggle {
+  align-items: flex-start;
   color: var(--ink);
 }
-.toggle.share-secure input {
+.share-secure .toggle input {
   flex: none;
-  margin-top: 2px;
+  margin: 2px 0 0; /* no native side margins, so the hint below lines up with the label */
 }
 .share-hint {
-  display: block;
-  margin-top: var(--s-1);
+  /* lined up with the label text: checkbox width plus the toggle's gap */
+  margin: var(--s-1) 0 0;
+  padding-left: calc(20px + var(--s-3));
+  font-size: var(--text-sm);
   color: var(--ink-soft);
+}
+.share-view-title {
+  font-size: var(--text-sm);
+  margin: 0 0 var(--s-3);
+  color: var(--ink);
+}
+.share-view-title:focus {
+  outline: none;
+}
+.share-view-title:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .fingerprint {
   display: grid;

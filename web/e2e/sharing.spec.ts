@@ -82,8 +82,10 @@ test("secure sharing: offered by default, then setup and pairing codes", async (
   await page.goto(server.url);
   await page.getByRole("button", { name: "Read on your phone" }).click();
   const dialog = page.getByRole("dialog", { name: "Read on your phone" });
-  const secure = dialog.getByRole("checkbox", { name: /Secure connection \(recommended\)/ });
+  // The hint is the checkbox's description, not part of its name (so it isn't read twice).
+  const secure = dialog.getByRole("checkbox", { name: "Secure connection (recommended)", exact: true });
   await expect(secure).toBeChecked();
+  await expect(secure).toHaveAccessibleDescription(/^Encrypts everything between your phone/);
   await audit(page);
 
   await dialog.getByRole("button", { name: "Turn on sharing" }).click();
@@ -92,12 +94,20 @@ test("secure sharing: offered by default, then setup and pairing codes", async (
   await expect(dialog.getByRole("img", { name: /pairs your phone/ })).toBeVisible();
   await audit(page);
 
-  // First time on this phone: the QR switches to the certificate setup page.
+  await expect(dialog.locator(".pair-code")).toHaveText(/the code 1 2 3 4 5 6/);
+
+  // First time on this phone: the QR switches to the certificate setup page. The button that
+  // was clicked is gone, so focus goes to the new view's heading rather than the page.
   await dialog.getByRole("button", { name: "Set up this phone" }).click();
+  await expect(dialog.getByRole("heading", { name: "Set up this phone" })).toBeFocused();
   await expect(dialog.getByRole("img", { name: /certificate setup page/ })).toBeVisible();
-  await expect(dialog.getByLabel(/SHA-256 fingerprint/)).toBeVisible();
+  const fingerprint = dialog.locator(".fingerprint");
+  await expect(fingerprint).toContainText("SHA-256 fingerprint:");
+  await expect(fingerprint).toContainText(FP.split(":").slice(0, 4).join(":"));
+  await expect(dialog.getByRole("link", { name: "Download the certificate", exact: true })).toHaveAttribute("href", "/api/sharing/ca.crt");
   await audit(page);
   await dialog.getByRole("button", { name: "Done, show the pairing code" }).click();
+  await expect(dialog.getByRole("heading", { name: "Pair your phone" })).toBeFocused();
   await expect(dialog.getByRole("img", { name: /pairs your phone/ })).toBeVisible();
 });
 
