@@ -139,6 +139,29 @@ def test_two_column_prose_is_never_a_table(lib, tmp_path, engine, monkeypatch):
         assert not [b for b in blocks(db, bid) if b["type"] == "table"]
 
 
+def test_text_tables_and_display_maths():
+    """A grid of numbers is a table even when the paper's font name looks like a maths font
+    (STIX); stacked limits and sums of a display equation are not a table."""
+    from proseway.pipeline.layout import Line, find_text_tables
+
+    def grid(rows, math=0.0):
+        out = []
+        for r, row in enumerate(rows):
+            for c, text in enumerate(row):
+                out.append(Line(text=text, x0=100 + 90 * c, x1=100 + 90 * c + 6 * len(text), top=100 + 14 * r,
+                                bot=110 + 14 * r, size=10, font="STIXTwoText", bold=False, italic=False,
+                                mono=False, math=math, spans=[], page=1))
+        return out
+
+    numbers = [["Model", "Params", "Score"], ["Alpha", "11B", "25.7"], ["Beta", "175B", "33.1"], ["Gamma", "175B", "39.9"]]
+    tables, rest = find_text_tables(grid(numbers, math=1.0))
+    assert [t["rows"] for t in tables] == [numbers] and not rest
+    equation = [["h(n+m)", "", "h(n)"], ["∑", "1+1/logX =", "∑"], ["n=a (qk) n", "", "n=a+m (qk) n"]]
+    lines = [ln for ln in grid(equation) if ln.text]
+    tables, rest = find_text_tables(lines)
+    assert not tables and len(rest) == len(lines)
+
+
 def test_ligature_letters_are_not_taken_for_overprint():
     """PDFium reports the 'ff' ligature of 'officers' as two f's with the same box; both stay.
     A copy of a glyph drawn later at the same spot (fake bold) is dropped."""

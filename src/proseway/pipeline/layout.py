@@ -486,7 +486,9 @@ def _is_table(run: list[list[Line]]) -> list[tuple[float, float]] | None:
     words = [len(ln.text.split()) for ln in cells]
     if sum(words) / len(words) > 5:
         return None  # sentences, not cells
-    mathy = sum(1 for ln in cells if ln.math >= 0.2 or any(ch in TABLE_MATH for ch in ln.text))
+    # By characters, not fonts: some papers set all their text in a font whose name looks
+    # like a maths font (STIX), which would make every cell look like maths.
+    mathy = sum(1 for ln in cells if any(ch in TABLE_MATH for ch in ln.text))
     if mathy >= 0.25 * len(cells):
         return None  # a display equation: limits, fractions and sums stacked in rows
     by_band: dict[int, list[Line]] = defaultdict(list)
@@ -870,7 +872,7 @@ class Assembler:
             self.blocks.extend(self._pending_footnotes)
             self._pending_footnotes = []
 
-    def _near_visual(self, ln: Line, visuals: list[tuple[float, Block]]) -> bool:
+    def _near_visual(self, ln: Line, visuals: list[tuple[float, str, Block]]) -> bool:
         return bool(visuals)
 
 

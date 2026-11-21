@@ -201,7 +201,7 @@ def page_objects(page: pdfium.PdfPage) -> tuple[int, list[Box], list[Box]]:
     we walk the object tree ourselves and apply each form's matrix on the way down. (Papers
     made with LaTeX embed most figures as forms; without this, their images land off-page.)
     """
-    w, h = page.get_size()
+    _w, h = page.get_size()
     try:
         cl, cb, _cr, _ct = page.get_cropbox()
     except Exception:
@@ -253,5 +253,4 @@ def page_objects(page: pdfium.PdfPage) -> tuple[int, list[Box], list[Box]]:
 
     top_level = raw.FPDFPage_CountObjects(page.raw)
     walk((raw.FPDFPage_GetObject(page.raw, k) for k in range(max(top_level, 0))), _IDENTITY, 0)
-    _ = w
     return n_paths, images, paths
