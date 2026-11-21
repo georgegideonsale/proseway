@@ -38,7 +38,7 @@ Proseway is a local Python server with a React reader. It converts a book PDF in
 ### Untested, or only partly tested
 - **Pairing a real phone:** the pairing *code* was tested over the real LAN address through the API, and the pairing page was checked in a phone-sized browser. I didn't type a live pairing code into the browser UI. It's a credential on a non-localhost address, and my safety rules don't allow that. I also didn't scan the QR code with an actual phone.
 - **Installing from the GitHub URL** (`uv tool install git+https://github.com/...`): the repo is private, so that URL needs your credentials. The same install from a local clone works.
-- **macOS and Linux:** only tested on Windows 11 here. CI runs the test suite on ubuntu, windows and macos (see "CI" below).
+- **macOS and Linux:** I only used the app by hand on Windows 11. **GitHub Actions CI is green** on ubuntu (Python 3.10 and 3.12), windows and macos: lint, type-check, web build, unit tests and the 43 API/pipeline tests. On ubuntu it also runs the Playwright and accessibility tests and builds the wheel with a smoke test. I haven't used the app by hand on macOS or Linux.
 - **Service worker / offline PWA:** it registers on `localhost` in production builds, but I didn't test offline reading.
 - **EPUB files in real readers:** not opened in Apple Books, KOReader or similar.
 - **Screen readers:** ARIA roles, labels, focus management and keyboard paths are implemented. I didn't run NVDA or VoiceOver.
