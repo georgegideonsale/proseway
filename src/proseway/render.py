@@ -2,8 +2,21 @@
 
 from __future__ import annotations
 
-from html import escape
+import re
+from html import escape as _escape
 from typing import Any
+
+# Characters that are not allowed in XML 1.0 at all (C0 controls except tab/newline/CR,
+# lone surrogates, U+FFFE/U+FFFF). One of these makes a whole EPUB chapter unreadable.
+_XML_INVALID = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff￾￿]")
+
+
+def xml_safe(text: str) -> str:
+    return _XML_INVALID.sub("", text)
+
+
+def escape(text: str, quote: bool = True) -> str:
+    return _escape(xml_safe(str(text)), quote=quote)
 
 
 def inline_html(text: str, spans: list[list[Any]], link_for=None) -> str:

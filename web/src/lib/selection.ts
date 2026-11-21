@@ -5,6 +5,8 @@
  * the block text. Anything else in the block (page markers, buttons) lives outside `.bt`, so
  * counting characters inside `.bt` gives offsets that match the stored text.
  */
+import { u16ToCp } from "./offsets";
+
 export interface BlockRange {
   blockId: string;
   start: number;
@@ -76,7 +78,8 @@ export function rangesFromSelection(sel: Selection | null, root: HTMLElement): B
     while (start < end && /\s/.test(text[start])) start++;
     while (end > start && /\s/.test(text[end - 1])) end--;
     ({ start, end } = snapToWords(text, start, end));
-    if (end > start) out.push({ blockId: b.dataset.block!, start, end });
+    // The server counts code points, the DOM counts UTF-16 units.
+    if (end > start) out.push({ blockId: b.dataset.block!, start: u16ToCp(text, start), end: u16ToCp(text, end) });
   }
   return out;
 }

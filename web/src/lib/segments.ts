@@ -1,4 +1,5 @@
 import type { Span } from "../types";
+import { cpToU16, cpToU16Map } from "./offsets";
 
 export interface Mark {
   id: string;
@@ -22,6 +23,12 @@ export interface Segment {
  * original text exactly, which keeps DOM offsets equal to text offsets.
  */
 export function segment(text: string, spans: Span[] = [], marks: Mark[] = []): Segment[] {
+  // Spans and marks arrive in code points (server offsets); work in UTF-16 from here on.
+  const map = cpToU16Map(text);
+  if (map) {
+    spans = spans.map((s) => [cpToU16(text, s[0], map), cpToU16(text, s[1], map), s[2], s[3]] as Span);
+    marks = marks.map((m) => ({ ...m, start: cpToU16(text, m.start, map), end: cpToU16(text, m.end, map) }));
+  }
   const len = text.length;
   const cuts = new Set<number>([0, len]);
   const validSpans = spans.filter((s) => s[0] >= 0 && s[1] <= len && s[0] < s[1]);

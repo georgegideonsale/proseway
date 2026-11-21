@@ -23,7 +23,7 @@ createRoot(document.getElementById("root")!).render(
 );
 
 // Offline reading needs a service worker, which browsers only allow in a secure context
-// (localhost, or the optional HTTPS mode for phones).
+// (localhost). Phones reach Proseway over plain HTTP, so they don't get offline caching yet.
 if ("serviceWorker" in navigator && window.isSecureContext && import.meta.env.PROD) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }

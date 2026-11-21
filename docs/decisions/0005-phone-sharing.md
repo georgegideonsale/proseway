@@ -17,7 +17,7 @@ Ship (a) and (c) now, and leave (b) as a documented option for later.
 
 - Network access is **off by default** and **off again at every launch**. Proseway only binds `127.0.0.1`.
 - "Read on your phone" starts a *second* listener bound to one chosen private LAN address, never `0.0.0.0`. It switches itself off after a chosen time (default 2 hours).
-- **Pairing:** the desktop shows a QR code, whose one-time token sits in the URL fragment, and a 6-digit code. Codes expire after 5 minutes, are single-use, and lock after 8 failures in 5 minutes. A successful pairing sets a random 256-bit device token in an `HttpOnly; SameSite=Strict` cookie. Only its SHA-256 is stored. Devices can be revoked.
+- **Pairing:** the desktop shows a QR code, whose one-time token sits in the URL fragment, and a 6-digit code. Codes expire after 5 minutes and are single-use. Each device gets 8 wrong guesses per 5 minutes, and pairing locks for everyone after 30. Requests are marked as coming from the LAN by the listener itself, not by comparing addresses. A successful pairing sets a random 256-bit device token in an `HttpOnly; SameSite=Strict` cookie. Only its SHA-256 is stored. Devices can be revoked.
 - **On the LAN listener:**
   - Every API call needs a valid device cookie.
   - Only reading, searching, annotating and position endpoints are allowed.

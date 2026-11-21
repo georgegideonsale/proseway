@@ -11,6 +11,7 @@ export interface Prefs {
   leading: number;
   measure: Measure;
   justify: boolean;
+  shortcuts: boolean; // single-key shortcuts (WCAG 2.1.4: must be possible to turn off)
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -20,6 +21,7 @@ export const DEFAULT_PREFS: Prefs = {
   leading: 1.62,
   measure: "medium",
   justify: false,
+  shortcuts: true,
 };
 
 const KEY = "proseway.prefs.v1";

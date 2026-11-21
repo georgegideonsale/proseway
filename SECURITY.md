@@ -13,7 +13,7 @@ Proseway is a local application. It is designed around these assumptions.
 - **Parsing:** PDFs are parsed by PDFium (through pypdfium2) and pdfminer/pdfplumber, in a separate worker process. A crash or hang in a parser can't take down the server. A watchdog stops a worker that makes no progress for 3 minutes or uses more than 3 GB of memory.
 - **Nothing in a PDF runs:** we never execute embedded JavaScript, forms or attachments.
 - **Converted text is escaped:** it's rendered as text through React or escaped HTML in EPUB export. Nothing from the PDF is ever inserted as raw HTML.
-- **Uploads:** the file must start with a PDF header and be under 1 GB. Duplicates are detected by SHA-256.
+- **Uploads:** the file must have a PDF header (`%PDF-`) in its first kilobyte and be under 1 GB. Duplicates are detected by SHA-256.
 - **Password-protected PDFs** are refused with a friendly message, and so are PDFs whose author turned off text extraction.
 
 ### The local server
@@ -29,7 +29,8 @@ Proseway is a local application. It is designed around these assumptions.
 - **Off at every launch.** When on, it binds a second listener to one chosen private LAN address, never `0.0.0.0`, and switches off after a chosen time.
 - **Pairing:** a QR code with a one-time token, or a 6-digit code.
   - Codes expire after 5 minutes and work once.
-  - Eight wrong codes within 5 minutes lock pairing until you ask for a new code on the computer.
+  - Each device gets 8 wrong guesses per 5 minutes, so one device can't lock others out.
+  - After 30 wrong guesses in total, pairing locks until you ask for a new code on the computer.
 - **Device tokens:** pairing sets a random 256-bit device token in an `HttpOnly; SameSite=Strict` cookie. Only its SHA-256 is stored. Devices can be unpaired at any time.
 - **What a phone can reach:** only reading, search, annotation and reading-position endpoints. Importing, deleting, backups, restore, sharing control and device management are local-only.
 

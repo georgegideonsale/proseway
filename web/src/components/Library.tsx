@@ -134,7 +134,7 @@ export function Library({ session }: { session: Session }) {
         <div className="lib-actions">
           {local && (
             <>
-              <button className="btn btn-quiet" onClick={() => setSharingOpen(true)}>
+              <button className="btn btn-quiet" onClick={() => setSharingOpen(true)} aria-label="Read on your phone">
                 <IconPhone width={18} height={18} />
                 <span className="hide-sm">Read on your phone</span>
               </button>

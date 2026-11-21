@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import uuid
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -72,12 +73,19 @@ def create_book(db: Database, paths: DataPaths, tmp: Path, sha: str, size: int, 
     os.replace(tmp, paths.original_pdf(book_id))
     t = now()
     safe_name = Path(file_name).name[:255] if file_name else "book.pdf"
-    with db.connect() as c:
-        c.execute(
-            "INSERT INTO books(id, sha256, title, file_name, file_size, status, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,'queued',?,?)",
-            (book_id, sha, title_from_filename(safe_name) + ".pdf", safe_name, size, t, t),
-        )
+    try:
+        with db.connect() as c:
+            c.execute(
+                "INSERT INTO books(id, sha256, title, file_name, file_size, status, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,'queued',?,?)",
+                (book_id, sha, title_from_filename(safe_name) + ".pdf", safe_name, size, t, t),
+            )
+    except sqlite3.IntegrityError:
+        # The same file was imported twice at the same moment: keep the first one.
+        shutil.rmtree(book_dir, ignore_errors=True)
+        with db.connect() as c:
+            row = c.execute("SELECT id FROM books WHERE sha256=?", (sha,)).fetchone()
+        return row["id"], False
     return book_id, True
 
 

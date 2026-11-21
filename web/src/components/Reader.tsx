@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { api } from "../api";
 import type { Session } from "../App";
 import { usePrefs } from "../lib/prefs";
+import { cpLength } from "../lib/offsets";
 import { navigate } from "../lib/router";
 import { rangesFromSelection, type BlockRange } from "../lib/selection";
 import type { Mark } from "../lib/segments";
@@ -522,6 +523,15 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
     if (matchMedia("(pointer: coarse)").matches && !pop) setChrome((c) => !c);
   }
 
+  // Move focus into the footnote popup when it opens, and back to the reference when it closes.
+  const footnoteOpen = !!footnote;
+  useEffect(() => {
+    if (!footnoteOpen) return;
+    const previous = document.activeElement as HTMLElement | null;
+    document.getElementById("fn-pop")?.focus({ preventScroll: true });
+    return () => previous?.focus?.({ preventScroll: true });
+  }, [footnoteOpen]);
+
   const citation = useCallback(
     (text: string, page: number | null) => {
       const t = manifest?.book;
@@ -546,6 +556,11 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
         return;
       }
       if (pop) return;
+      if (e.key === "Escape" && footnote) {
+        setFootnote(null);
+        return;
+      }
+      if (!prefs.shortcuts && e.key !== "Escape") return;
       const k = e.key.toLowerCase();
       if (k === "t") setPanel((p) => (p === "toc" ? null : "toc"));
       else if (k === "/" || k === "s") {
@@ -559,8 +574,9 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
         const info = blockIndex.get(pos.blockId);
         const b = info?.block;
         if (b && b.text && ["paragraph", "list_item", "heading", "caption", "footnote"].includes(b.type)) {
-          const already = (marksByBlock.get(b.id) ?? []).some((m) => m.start === 0 && m.end === b.text.length);
-          if (!already) createHighlight([{ blockId: b.id, start: 0, end: b.text.length }], "yellow").then(() => toast(`Highlighted the passage on p. ${b.page}.`));
+          const len = cpLength(b.text);
+          const already = (marksByBlock.get(b.id) ?? []).some((m) => m.start === 0 && m.end === len);
+          if (!already) createHighlight([{ blockId: b.id, start: 0, end: len }], "yellow").then(() => toast(`Highlighted the passage on p. ${b.page}.`));
         }
       }
       else if (k === "escape") {
@@ -644,13 +660,14 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
       </header>
 
       <main id="reading" className="page" tabIndex={-1}>
+        <h1 className="visually-hidden">{book.title}</h1>
         <div id="sentinel-top" className="sentinel" aria-hidden="true" />
         {win[0] > 0 && (
           <div className="chapter-gap" aria-hidden="true">
             <div className="spinner" />
           </div>
         )}
-        <article ref={articleRef} className="article" onClick={onArticleClick} lang="en">
+        <article ref={articleRef} className="article" onClick={onArticleClick}>
           {visibleChapters.map((ch) => (
             <section key={ch} className="chapter" data-chapter={ch} aria-label={`Part ${ch + 1}`}>
               {chapters.get(ch)!.map((b) => {
@@ -705,35 +722,22 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
       </footer>
 
       {back && (
-        <button
-          className="back-chip"
-          onClick={() => {
-            const b = back;
-            setBack(null);
-            jump({ blockId: b.blockId, seq: b.seq, chapter: b.chapter }, { remember: false });
-          }}
-        >
-          <IconReturn width={16} height={16} />
-          Back to p. {back.page}
-          <span
-            className="back-chip-x"
-            role="button"
-            aria-label="Dismiss"
-            tabIndex={0}
-            onClick={(e) => {
-              e.stopPropagation();
+        <div className="back-chip">
+          <button
+            className="back-chip-go"
+            onClick={() => {
+              const b = back;
               setBack(null);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.stopPropagation();
-                setBack(null);
-              }
+              jump({ blockId: b.blockId, seq: b.seq, chapter: b.chapter }, { remember: false });
             }}
           >
+            <IconReturn width={16} height={16} />
+            Back to p. {back.page}
+          </button>
+          <button className="back-chip-x" aria-label="Dismiss" onClick={() => setBack(null)}>
             ×
-          </span>
-        </button>
+          </button>
+        </div>
       )}
 
       {pop && (
@@ -797,6 +801,8 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
           className="fn-pop"
           role="dialog"
           aria-label="Footnote"
+          tabIndex={-1}
+          id="fn-pop"
           style={{ top: Math.min(footnote.rect.bottom + 10, window.innerHeight - 220), left: Math.max(12, Math.min(footnote.rect.left - 140, document.documentElement.clientWidth - 372)) }}
         >
           <p>{footnote.block.text}</p>

@@ -68,8 +68,8 @@ Checked 2026-11-21. Versions are the latest on PyPI or npm that day. Licence sou
 |---|---|---|---|---|
 | react / react-dom | 19.3.1 | MIT | Yes | [npm](https://www.npmjs.com/package/react) |
 | vite | 8.3.8 | MIT | Yes | Build-time only. [GitHub](https://github.com/vitejs/vite) |
-| typescript | 7.0.2 | Apache-2.0 | Yes | Build-time only. [GitHub](https://github.com/microsoft/TypeScript) |
-| @tanstack/react-virtual | 3.14.26 | MIT | Yes | [GitHub](https://github.com/TanStack/virtual) |
+| typescript | 5.9.3 | Apache-2.0 | Yes | Build-time only. [GitHub](https://github.com/microsoft/TypeScript) |
+| @tanstack/react-virtual | (not used) | MIT | n/a | Considered for virtualised rendering; Proseway uses CSS `content-visibility` and chapter-by-chapter loading instead. |
 | alternatives: react-virtuoso / react-window | 4.18.24 / 2.5.3 | MIT / MIT | Yes | [npm](https://www.npmjs.com/package/react-virtuoso), [npm](https://www.npmjs.com/package/react-window) |
 | vitest | 5.1.1 | MIT | Yes | Dev only. [GitHub](https://github.com/vitest-dev/vitest) |
 | @playwright/test | 1.65.1 | Apache-2.0 | Yes | Dev only. Browser binaries are downloaded at test time and are not redistributed. [GitHub](https://github.com/microsoft/playwright) |
@@ -93,3 +93,9 @@ All six are **SIL OFL-1.1**. Fontsource npm packages carry the same licence (`@f
 
 - Ship a `THIRD_PARTY_NOTICES` file (Python wheel and npm bundle) listing each bundled package plus the OFL texts. Include the RapidOCR/PaddleOCR and Docling model attributions when those extras download weights.
 - Model weights are downloaded at runtime, not bundled. Record each model's licence URL in the app's "About / licences" screen.
+
+### What Proseway actually ships (checked 2026-11-21)
+
+- **Fonts:** Proseway ships the Fontsource-built WOFF2/WOFF files unchanged. Fontsource splits each family into Unicode-range files; we don't subset or modify them ourselves. Whether Fontsource's range-splitting counts as "modification" under OFL FAQ 2.6 is unsettled. The files keep their original names and metadata, and Fontsource distributes Source Serif 4 and OpenDyslexic this way publicly. If this matters to a downstream distributor, swap in the upstream release files for those two families.
+- **Licence texts:** every bundled package and font has its full licence text in `THIRD_PARTY_NOTICES.txt`. `web/scripts/notices.mjs` generates it at build time, and it's served with the app at `/THIRD_PARTY_NOTICES.txt`.
+- **Dev-only tools:** `@axe-core/playwright` (MPL-2.0) is used only in tests. It is never bundled.

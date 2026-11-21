@@ -52,7 +52,14 @@ def run_conversion(db_path: str, data_root: str, book_id: str, skip_pages: list[
     skip = set(skip_pages or [])
 
     try:
-        _update(db, book_id, status="converting", error=None)
+        # Only start if nobody pressed Stop while this process was starting up.
+        with db.connect() as c:
+            started_ok = c.execute(
+                "UPDATE books SET status='converting', error=NULL, updated_at=? WHERE id=? AND status != 'cancelled'",
+                (now(), book_id),
+            ).rowcount
+        if not started_ok:
+            return
         meta = extract.read_metadata(pdf_path)
         src = extract.Source(pdf_path)
         n_pages = len(src)
@@ -84,10 +91,11 @@ def run_conversion(db_path: str, data_root: str, book_id: str, skip_pages: list[
                             if ocr_engine is not None:
                                 data = extract.extract_page(src, i, assets_dir, ocr=ocr_engine)
                     _write_json_atomic(out, data)
-                if i % 4 == 0 or i == n_pages - 1:
-                    if _status(db, book_id) == "cancelled":
-                        raise Cancelled()
-                    _update(db, book_id, pages_done=i + 1)
+                # Progress after every page: the watchdog uses it to know exactly which page
+                # is stuck, and the library shows it.
+                if _status(db, book_id) == "cancelled":
+                    raise Cancelled()
+                _update(db, book_id, pages_done=i + 1)
             log.info("extracted %d pages in %.1fs", n_pages, time.monotonic() - started)
 
             pages = []
@@ -169,6 +177,12 @@ def _store(db: Database, book_id: str, rows: list[dict], result: dict) -> None:
                      res.page if res.page is not None else a["page"],
                      1 if res.method == "orphaned" else 0, a["id"]),
                 )
+        # Keep the reading position too: same block if it still exists, else the same place.
+        pos = c.execute("SELECT block_id, seq FROM positions WHERE book_id=?", (book_id,)).fetchone()
+        if pos is not None and rows and not any(r["id"] == pos["block_id"] for r in rows):
+            target = rows[min(max(pos["seq"], 0), len(rows) - 1)]
+            c.execute("UPDATE positions SET block_id=?, seq=? WHERE book_id=?",
+                      (target["id"], min(max(pos["seq"], 0), len(rows) - 1), book_id))
         log.info("stored %d blocks (replaced %d), re-anchored %d annotations", len(rows), old, len(anns))
 
 

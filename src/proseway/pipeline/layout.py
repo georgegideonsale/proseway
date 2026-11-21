@@ -597,6 +597,10 @@ def assemble(pages_data: list[dict], outline: list[dict] | None = None) -> dict[
     asm._pending_footnotes = []
     asm.removed = removed
     for page, lines in zip(pages_data, ordered, strict=True):
+        if page.get("failed"):
+            # Never drop a page silently: leave a visible marker where it belongs.
+            asm.emit(Block(type="page_image", page=page["n"], data={"failed": True}))
+            continue
         asm.add_page(page["n"], lines, page["h"], page.get("images", []), page.get("tables", []))
         if asm.open is None or asm.open.type != "paragraph":
             asm.flush_footnotes()
@@ -616,6 +620,7 @@ def assemble(pages_data: list[dict], outline: list[dict] | None = None) -> dict[
             "pages": len(pages_data),
             "ocr_pages": sum(1 for p in pages_data if p.get("ocr")),
             "scanned_pages": sum(1 for p in pages_data if p.get("scanned")),
+            "failed_pages": [p["n"] for p in pages_data if p.get("failed")],
             "blocks": len(blocks),
             "words": sum(len(WORD.findall(b.text)) for b in blocks),
         },

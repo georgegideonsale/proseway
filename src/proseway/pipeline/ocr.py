@@ -32,9 +32,12 @@ class RapidOcrEngine:
     def page_lines(self, pdfium_doc, index: int, page_w: float, page_h: float) -> list[dict]:
         import numpy as np
 
+        from .extract import capped_scale
+
         page = pdfium_doc[index]
+        scale = capped_scale(page_w, page_h, OCR_SCALE)
         try:
-            img = page.render(scale=OCR_SCALE, may_draw_forms=False).to_pil().convert("RGB")
+            img = page.render(scale=scale, may_draw_forms=False).to_pil().convert("RGB")
         finally:
             page.close()
         result, _elapse = self._engine(np.asarray(img))
@@ -42,8 +45,8 @@ class RapidOcrEngine:
         for box, text, score in result or []:
             if not text or not text.strip() or float(score) < 0.5:
                 continue
-            xs = [p[0] / OCR_SCALE for p in box]
-            ys = [p[1] / OCR_SCALE for p in box]
+            xs = [p[0] / scale for p in box]
+            ys = [p[1] / scale for p in box]
             top, bot = min(ys), max(ys)
             height = bot - top
             lines.append({

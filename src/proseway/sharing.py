@@ -10,7 +10,8 @@ Security model (see docs/decisions/0005-phone-sharing.md):
 * Every API request on the LAN listener needs a valid device cookie, and only reading and
   annotating endpoints are reachable from the LAN at all. Managing sharing, devices, imports,
   deletions and restore are local-only.
-* Pairing codes expire after 5 minutes, are single-use, and lock after repeated failures.
+* Pairing codes expire after 5 minutes and are single-use. Each device gets 8 wrong guesses per
+  5 minutes; after 30 wrong guesses in total, pairing locks until the computer shows a new code.
 * Sharing switches itself off after a chosen time (default 2 hours).
 """
 
@@ -35,7 +36,8 @@ from .db import Database, now
 log = logging.getLogger(__name__)
 
 PAIRING_TTL = 300.0
-MAX_FAILURES = 8
+MAX_FAILURES = 8  # per device (client address) within the window
+MAX_GLOBAL_FAILURES = 30  # all devices together, then pairing locks until a new code
 FAILURE_WINDOW = 300.0
 COOKIE_NAME = "pw_device"
 COOKIE_MAX_AGE = 180 * 24 * 3600
@@ -120,7 +122,16 @@ class SharingManager:
                 kwargs = {"ssl_certfile": self.ssl_files[0], "ssl_keyfile": self.ssl_files[1]}
             # lifespan="off": the app's startup/shutdown (job supervisor) belongs to the main
             # listener; this second listener only serves requests.
-            config = uvicorn.Config(self.app, host=address, port=port, log_level="warning",
+            inner = self.app
+
+            async def lan_app(scope, receive, send):
+                # Requests on this listener are marked here, so "is this from the network?"
+                # never depends on comparing addresses or on mutable sharing state.
+                scope = dict(scope)
+                scope["proseway.lan"] = True
+                await inner(scope, receive, send)
+
+            config = uvicorn.Config(lan_app, host=address, port=port, log_level="warning",
                                     access_log=False, server_header=False, lifespan="off", **kwargs)
             server = uvicorn.Server(config)
             thread = threading.Thread(target=server.run, name="proseway-lan", daemon=True)
@@ -161,9 +172,8 @@ class SharingManager:
             self.state.enabled = False
             self.state.pairing = None
 
-    def is_lan_request(self, server_addr: tuple[str, int] | None) -> bool:
-        s = self.state
-        return bool(server_addr) and s.enabled and server_addr[0] == s.address and server_addr[1] == s.port
+    def is_lan_request(self, scope: dict) -> bool:
+        return bool(scope.get("proseway.lan"))
 
     def lan_host_ok(self, host_header: str) -> bool:
         s = self.state
@@ -193,23 +203,27 @@ class SharingManager:
                     return None
             return p
 
-    def pair(self, secret: str, device_name: str) -> str | None:
+    def pair(self, secret: str, device_name: str, client: str = "?") -> str | None:
         """Exchange a pairing code or token for a device token. Returns None on failure."""
         with self._lock:
             s = self.state
             t = time.time()
-            while s.failures and t - s.failures[0] > FAILURE_WINDOW:
+            while s.failures and t - s.failures[0][0] > FAILURE_WINDOW:
                 s.failures.popleft()
             p = s.pairing
             if s.locked or p is None or p.used or p.expires < t:
                 return None
-            secret = (secret or "").strip()
-            ok = hmac.compare_digest(secret, p.token) or (
-                len(secret) == 6 and hmac.compare_digest(secret, p.code)
+            # One device guessing can only lock itself out; the overall cap is a backstop
+            # (a 6-digit code with ~MAX_GLOBAL_FAILURES guesses is still a 1-in-30,000 chance).
+            if sum(1 for _t, c in s.failures if c == client) >= MAX_FAILURES:
+                return None
+            raw = (secret or "").strip().encode("utf-8")
+            ok = hmac.compare_digest(raw, p.token.encode()) or (
+                len(raw) == 6 and hmac.compare_digest(raw, p.code.encode())
             )
             if not ok:
-                s.failures.append(t)
-                if len(s.failures) >= MAX_FAILURES:
+                s.failures.append((t, client))
+                if len(s.failures) >= MAX_GLOBAL_FAILURES:
                     s.locked = True  # the desktop has to show a fresh code
                     log.warning("pairing locked after repeated failures")
                 return None

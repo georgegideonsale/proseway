@@ -26,6 +26,30 @@ describe("segment", () => {
   });
 });
 
+describe("characters outside the BMP (server counts code points)", () => {
+  const text = "𝑥 is the variable and 𝑦 the result.";
+  it("places a highlight given in code points on the right UTF-16 text", () => {
+    const cpStart = [...text].indexOf("v"); // code-point index of "variable"
+    const segs = segment(text, [], [{ id: "m", start: cpStart, end: cpStart + 8, color: "yellow" }]);
+    expect(segs.filter((s) => s.marks.length).map((s) => s.text).join("")).toBe("variable");
+    expect(segs.map((s) => s.text).join("")).toBe(text);
+  });
+
+  it("reports DOM selections back in code points", () => {
+    document.body.innerHTML = `<article id="a"><p data-block="m1"><span class="bt"><span>${text}</span></span></p></article>`;
+    const art = document.getElementById("a")!;
+    const node = art.querySelector(".bt span")!.firstChild!;
+    const range = document.createRange();
+    range.setStart(node, text.indexOf("variable")); // UTF-16 index
+    range.setEnd(node, text.indexOf("variable") + 8);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const [r] = rangesFromSelection(sel, art);
+    expect([...text].slice(r.start, r.end).join("")).toBe("variable");
+  });
+});
+
 describe("snippetParts", () => {
   it("splits FTS markers without interpreting HTML", () => {
     const parts = snippetParts("a <b>\u0002word\u0003 here");

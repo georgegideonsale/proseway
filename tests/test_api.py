@@ -230,10 +230,29 @@ def test_lan_pairing_flow_and_local_only_endpoints(book, lan):
 def test_lan_wrong_host_and_lockout(book, lan):
     c, s = lan
     assert c.get("/api/session", headers={"Host": "attacker.example"}).status_code == 421
+    wrong = "999999" if s.state.pairing.code != "999999" else "888888"
     for _ in range(8):
-        c.post("/api/pair", headers=H, json={"secret": "999999" if s.state.pairing.code != "999999" else "888888"})
-    assert s.state.locked
+        c.post("/api/pair", headers=H, json={"secret": wrong})
+    # This device is now locked out, even with the right code...
     assert c.post("/api/pair", headers=H, json={"secret": s.state.pairing.code}).status_code == 403
+    # ...but one guessing device can't lock everyone else out.
+    assert not s.state.locked
+    assert s.pair(s.state.pairing.code, "Phone", client="192.168.1.50") is not None
+
+
+def test_global_pairing_lock(lan):
+    _c, s = lan
+    wrong = "999999" if s.state.pairing.code != "999999" else "888888"
+    for i in range(30):
+        s.pair(wrong, "x", client=f"10.0.0.{i}")
+    assert s.state.locked
+    assert s.pair(s.state.pairing.code, "Phone", client="10.0.0.200") is None
+
+
+def test_pairing_rejects_odd_input_without_crashing(book, lan):
+    c, _s = lan
+    for secret in ("é" * 6, "", "\x00" * 6, 123456):
+        assert c.post("/api/pair", headers=H, json={"secret": secret}).status_code == 403
 
 
 def test_revoked_device_loses_access(book, lan):
@@ -243,3 +262,44 @@ def test_revoked_device_loses_access(book, lan):
     for d in s.devices():
         s.revoke(d["id"])
     assert c.get("/api/books").status_code == 401
+
+
+def test_restore_rejects_bad_fields_without_partial_writes(client, book):
+    p = first_paragraph(client, book)
+    good = client.get("/api/backup.json").json()
+    sha = good["books"][0]["sha256"]
+    ann = {"id": "a" * 32, "kind": "highlight", "block_id": p["id"], "start": 0, "end": 5,
+           "exact": p["text"][:5], "created_at": 1.0, "updated_at": 2.0, "color": "yellow"}
+    for bad in ({"updated_at": "yesterday"}, {"color": "red;"}, {"group_id": "../x"}, {"start": True}):
+        payload = {"format": "proseway-backup", "version": 1,
+                   "books": [{"sha256": sha, "annotations": [ann]},
+                             {"sha256": sha, "annotations": [{**ann, "id": "b" * 32, **bad}]}]}
+        r = client.post("/api/restore", headers=H, files={"file": ("b.json", json.dumps(payload), "application/json")})
+        assert r.status_code == 400, bad
+    # Nothing from the rejected files was written.
+    assert client.get(f"/api/books/{book}/annotations").json()["annotations"] == []
+
+
+def test_epub_strips_xml_invalid_characters(client, app, book):
+    with app.state.db.connect() as c:
+        c.execute("UPDATE books SET title=? WHERE id=?", ("Bad\x18Title\x01", book))
+        c.execute("UPDATE blocks SET text=text || ? WHERE book_id=? AND seq=1", ("\x18\x0b", book))
+    z = zipfile.ZipFile(io.BytesIO(client.get(f"/api/books/{book}/export.epub").content))
+    for n in z.namelist():
+        if n.endswith((".xhtml", ".opf")):
+            ElementTree.fromstring(z.read(n))
+
+
+def test_skipped_page_is_visible_not_silent(app, tmp_path):
+    from proseway.pipeline import layout
+
+    pages = [
+        {"n": 1, "w": 612, "h": 792, "lines": [{"t": "First page text.", "x0": 72, "x1": 300, "top": 100, "bot": 111,
+                                                 "sz": 11, "font": "Times", "b": False, "i": False, "m": False,
+                                                 "mt": 0, "sp": []}], "images": [], "tables": []},
+        {"n": 2, "w": 612, "h": 792, "lines": [], "images": [], "tables": [], "failed": True},
+    ]
+    result = layout.assemble(pages)
+    assert [b.type for b in result["blocks"]][-1] == "page_image"
+    assert result["blocks"][-1].data == {"failed": True}
+    assert result["stats"]["failed_pages"] == [2]

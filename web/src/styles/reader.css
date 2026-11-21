@@ -1173,3 +1173,28 @@ mark.hl.has-note {
     display: none !important;
   }
 }
+.blk-failed {
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--r-sm);
+  padding: var(--s-3) var(--s-4);
+  margin: 1.4em 0;
+}
+.back-chip-go {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  padding: 0;
+}
+.back-chip-x {
+  border: 0;
+  background: none;
+  cursor: pointer;
+}

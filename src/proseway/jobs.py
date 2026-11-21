@@ -4,7 +4,8 @@
 * Cancel marks the book cancelled; the worker notices and stops, and is killed if it doesn't.
 * Resume restarts the worker, which skips pages that already have a checkpoint file.
 * A watchdog kills a worker that stops making progress (a pathological page) or uses too
-  much memory, then restarts it with the stuck page skipped so the rest of the book converts.
+  much memory, then restarts it with that one page skipped so the rest of the book converts.
+  The skipped page is shown in the reader as a page that couldn't be converted.
 """
 
 from __future__ import annotations
@@ -88,11 +89,12 @@ class JobManager:
             with self.db.connect() as c:
                 c.execute("UPDATE books SET status='cancelled', updated_at=? WHERE id=? AND status IN ('queued','converting','paused')",
                           (now(), book_id))
-            job = self._jobs.get(book_id)
+            job = self._jobs.pop(book_id, None)  # so Resume right after Stop starts afresh
         if job and job.process is not None:
             job.process.join(timeout=5)
             if job.process.is_alive():
                 job.process.kill()
+                job.process.join(timeout=5)
 
     def reconvert(self, book_id: str) -> None:
         self.cancel(book_id)
@@ -167,8 +169,9 @@ class JobManager:
                 log.warning("restarting stuck converter for %s (%s)", job.book_id, reason)
                 proc.kill()
                 proc.join(timeout=5)
+                # Progress is written after every page, so the stuck page is the next one.
                 stuck_page = (row["pages_done"] or 0) + 1
-                job.skip_pages = sorted(set(job.skip_pages + [stuck_page + k for k in range(4)]))
+                job.skip_pages = sorted(set(job.skip_pages + [stuck_page]))
                 job.restarts += 1
                 if job.restarts > 5:
                     with self._lock:

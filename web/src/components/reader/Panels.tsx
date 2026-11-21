@@ -223,14 +223,43 @@ export function NotesPanel({ bookId, annotations, onJump, onUpdate, onDelete, on
         ) : undefined
       }
     >
-      <div className="tabs" role="tablist" aria-label="Notes view">
-        <button role="tab" aria-selected={tab === "highlights"} className="tab" onClick={() => setTab("highlights")}>
+      <div
+        className="tabs"
+        role="tablist"
+        aria-label="Notes view"
+        onKeyDown={(e) => {
+          if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+            e.preventDefault();
+            const next = tab === "highlights" ? "bookmarks" : "highlights";
+            setTab(next);
+            document.getElementById(`tab-${next}`)?.focus();
+          }
+        }}
+      >
+        <button
+          role="tab"
+          id="tab-highlights"
+          aria-controls="tabpanel-notes"
+          aria-selected={tab === "highlights"}
+          tabIndex={tab === "highlights" ? 0 : -1}
+          className="tab"
+          onClick={() => setTab("highlights")}
+        >
           Highlights <span className="tab-count">{groups.length}</span>
         </button>
-        <button role="tab" aria-selected={tab === "bookmarks"} className="tab" onClick={() => setTab("bookmarks")}>
+        <button
+          role="tab"
+          id="tab-bookmarks"
+          aria-controls="tabpanel-notes"
+          aria-selected={tab === "bookmarks"}
+          tabIndex={tab === "bookmarks" ? 0 : -1}
+          className="tab"
+          onClick={() => setTab("bookmarks")}
+        >
           Bookmarks <span className="tab-count">{bookmarks.length}</span>
         </button>
       </div>
+      <div role="tabpanel" id="tabpanel-notes" aria-labelledby={`tab-${tab}`}>
 
       {tab === "highlights" && (
         <>
@@ -285,6 +314,7 @@ export function NotesPanel({ bookId, annotations, onJump, onUpdate, onDelete, on
                             setEditing(null);
                           }
                           if (e.key === "Escape") {
+                            e.preventDefault();
                             e.stopPropagation();
                             setEditing(null);
                           }
@@ -359,6 +389,7 @@ export function NotesPanel({ bookId, annotations, onJump, onUpdate, onDelete, on
             ))}
           </ol>
         ))}
+      </div>
     </Sheet>
   );
 }
@@ -460,6 +491,10 @@ export function AppearancePanel({ prefs, update, onClose }: { prefs: Prefs; upda
       <label className="toggle">
         <input type="checkbox" checked={prefs.justify} onChange={(e) => update({ justify: e.target.checked })} />
         <span>Justify text, with automatic hyphenation</span>
+      </label>
+      <label className="toggle" style={{ marginTop: 12 }}>
+        <input type="checkbox" checked={prefs.shortcuts} onChange={(e) => update({ shortcuts: e.target.checked })} />
+        <span>Single-key shortcuts (T contents, / search, N notes, A appearance, B bookmark, H highlight)</span>
       </label>
       <p className="panel-foot">These settings are saved on this device only, so your phone and computer can differ.</p>
     </Sheet>

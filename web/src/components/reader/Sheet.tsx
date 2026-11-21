@@ -9,10 +9,12 @@ export function Sheet({ title, onClose, children, actions }: { title: string; on
     const first = ref.current?.querySelector<HTMLElement>("[data-autofocus]") ?? ref.current?.querySelector<HTMLElement>("h2");
     first?.focus({ preventScroll: true });
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      // Escape inside a text field cancels the edit, not the whole panel.
+      const t = e.target as HTMLElement;
+      if (t.tagName === "TEXTAREA" || (t.tagName === "INPUT" && (t as HTMLInputElement).type !== "search")) return;
+      e.preventDefault();
+      onClose();
     };
     const el = ref.current;
     el?.addEventListener("keydown", onKey);

@@ -315,6 +315,17 @@ def lines_from_chars(chars: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+MAX_RENDER_PIXELS = 40_000_000  # ~160 MB of RGBA; a hostile page can't ask for more
+
+
+def capped_scale(width_pt: float, height_pt: float, scale: float, max_pixels: int = MAX_RENDER_PIXELS) -> float:
+    """Reduce a render scale so the bitmap stays under max_pixels, whatever size the page claims."""
+    pixels = max(width_pt, 1.0) * max(height_pt, 1.0) * scale * scale
+    if pixels <= max_pixels:
+        return scale
+    return scale * (max_pixels / pixels) ** 0.5
+
+
 def _render_crop(pdfium_doc, page_index: int, bbox, page_w: float, page_h: float, out: Path,
                  scale: float = 2.0, fmt: str = "JPEG") -> bool:
     x0, top, x1, bottom = bbox
@@ -322,6 +333,7 @@ def _render_crop(pdfium_doc, page_index: int, bbox, page_w: float, page_h: float
     top, bottom = max(0.0, top), min(page_h, bottom)
     if x1 - x0 < 4 or bottom - top < 4:
         return False
+    scale = capped_scale(x1 - x0, bottom - top, scale)
     try:
         page = pdfium_doc[page_index]
         bitmap = page.render(
@@ -346,8 +358,9 @@ def render_cover(path: Path, out: Path, width: int = 480) -> bool:
     doc = open_pdfium(path)
     try:
         page = doc[0]
-        w, _h = page.get_size()
-        bitmap = page.render(scale=width / w, may_draw_forms=False)
+        w, h = page.get_size()
+        bitmap = page.render(scale=capped_scale(w, h, width / max(w, 1.0), max_pixels=4_000_000),
+                             may_draw_forms=False)
         bitmap.to_pil().convert("RGB").save(out, "JPEG", quality=82, optimize=True)
         page.close()
         return True

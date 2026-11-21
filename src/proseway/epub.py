@@ -11,12 +11,11 @@ import json
 import uuid
 import zipfile
 from datetime import datetime, timezone
-from html import escape
 
 from . import __version__
 from .db import Database
 from .paths import DataPaths
-from .render import block_html
+from .render import block_html, escape
 
 CSS = """
 body { font-family: serif; line-height: 1.5; margin: 0 4%; }
@@ -70,14 +69,15 @@ def build_epub(db: Database, paths: DataPaths, book_id: str) -> bytes:
     z.writestr("OEBPS/style.css", CSS)
 
     spine = []
+    marked_pages: set[int] = set()
     for ch, items in sorted(chapters.items()):
         parts = []
-        last_page = None
         for b in items:
-            if b["page"] != last_page:
-                parts.append(f'<span epub:type="pagebreak" role="doc-pagebreak" id="page{b["page"]}-{ch}" '
+            # One marker per original page, at its first block (footnotes can repeat a page).
+            if b["page"] not in marked_pages:
+                marked_pages.add(b["page"])
+                parts.append(f'<span epub:type="pagebreak" role="doc-pagebreak" id="page{b["page"]}" '
                              f'title="{b["page"]}" class="pagebreak"></span>')
-                last_page = b["page"]
             parts.append(block_html(b, asset_url, link_for))
         doc = ('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html>\n'
                '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'

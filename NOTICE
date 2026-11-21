@@ -1,4 +1,17 @@
 Proseway
 Copyright 2026 Proseway contributors
 
-This product includes software developed by third parties; see docs/research/licenses.md.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The built web app (proseway/static) bundles React, ReactDOM and scheduler (MIT) and the
+fonts Literata, Source Serif 4, Atkinson Hyperlegible Next and OpenDyslexic (SIL Open Font
+License 1.1). Their licence texts are reproduced in proseway/static/THIRD_PARTY_NOTICES.txt.
+
+Python dependencies are not bundled; your package manager installs them under their own
+licences: FastAPI (MIT), Starlette (BSD-3-Clause), Uvicorn (BSD-3-Clause), python-multipart
+(Apache-2.0), pdfplumber and pdfminer.six (MIT), pypdfium2 (Apache-2.0 / BSD-3-Clause, with
+PDFium under BSD-3-Clause and other permissive licences), psutil (BSD-3-Clause), RapidFuzz
+(MIT) and segno (BSD-3-Clause). The optional OCR add-on uses RapidOCR (Apache-2.0) with
+ONNX Runtime (MIT).
+
+The full licence review is in docs/research/licenses.md in the source repository.

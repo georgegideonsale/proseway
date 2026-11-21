@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
 ASSET_NAME = re.compile(r"^[A-Za-z0-9._-]{1,120}\.(?:jpg|png)$")
+RESTORE_LIMIT = 50 * 2**20
 COLORS = {"yellow", "green", "blue", "pink", "purple"}
 
 # What a paired phone may do. Everything else is local-only.
@@ -93,11 +94,10 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
-        server = request.scope.get("server")
         host = request.headers.get("host", "")
         path = request.url.path
         method = request.method
-        is_lan = sharing.is_lan_request(server)
+        is_lan = sharing.is_lan_request(request.scope)
         request.state.is_lan = is_lan
         request.state.device = None
 
@@ -128,7 +128,12 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
             if origin and origin.split("://", 1)[-1].lower() != host.lower():
                 return _error(403, "Cross-origin request refused.", "csrf")
             length = request.headers.get("content-length")
-            limit = library.MAX_UPLOAD_BYTES + 10 * 2**20 if path == "/api/books" else 20 * 2**20
+            if path == "/api/books":
+                limit = library.MAX_UPLOAD_BYTES + 10 * 2**20
+            elif path == "/api/restore":
+                limit = RESTORE_LIMIT + 2**20
+            else:
+                limit = 20 * 2**20
             if length and length.isdigit() and int(length) > limit:
                 return _error(413, "That file is too large.", "too_large")
 
@@ -495,15 +500,17 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
 
     @app.post("/api/restore")
     async def restore(file: UploadFile) -> dict[str, Any]:
-        raw = await file.read(50 * 2**20 + 1)
-        if len(raw) > 50 * 2**20:
+        raw = await file.read(RESTORE_LIMIT + 1)
+        if len(raw) > RESTORE_LIMIT:
             raise HTTPException(413, "That backup is too large.")
         try:
             data = json.loads(raw.decode("utf-8"))
-            return {"result": export.restore_backup(db, paths, data)}
         except (ValueError, UnicodeDecodeError) as exc:
-            msg = str(exc) if isinstance(exc, export.BackupError) else "That file isn't valid JSON."
-            raise HTTPException(400, msg) from exc
+            raise HTTPException(400, "That file isn't valid JSON.") from exc
+        try:
+            return {"result": export.restore_backup(db, paths, data)}
+        except export.BackupError as exc:
+            raise HTTPException(400, f"Couldn't restore this backup: {exc}") from exc
 
     # ------------------------------------------------------------------ sharing
 
@@ -518,7 +525,10 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
             address = body.get("address") or (addrs[0] if addrs else "")
             if not address:
                 raise HTTPException(400, "This computer doesn't seem to be on a local network.")
-            minutes = int(body.get("minutes") or 120)
+            try:
+                minutes = int(body.get("minutes") or 120)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, "Choose how long sharing should stay on.") from exc
             try:
                 sharing.enable(address, app.state.port, minutes=min(max(minutes, 5), 24 * 60))
             except (ValueError, OSError) as exc:
@@ -558,7 +568,8 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
             raise HTTPException(400, "Pairing happens on the phone.")
         ua = request.headers.get("user-agent", "")
         name = _device_name(ua)
-        token = sharing.pair(str(body.get("secret", ""))[:100], name)
+        client = request.client.host if request.client else "?"
+        token = sharing.pair(str(body.get("secret", ""))[:100], name, client)
         if token is None:
             return _error(403, "That code didn't work. Check the code on your computer, or ask it for a new one.",
                           "bad_code")

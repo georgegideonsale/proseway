@@ -100,6 +100,13 @@ function BlockViewInner({ block, bookId, marks, bookmarked, ocrAvailable }: Prop
       );
     case "figure":
     case "page_image": {
+      if ((block.data as { failed?: boolean }).failed) {
+        return (
+          <div {...common} className="blk blk-failed" role="note">
+            Page {block.page} couldn't be converted. It's in the original PDF; you can try converting the book again.
+          </div>
+        );
+      }
       const w = block.data.w || 4;
       const h = block.data.h || 3;
       return (

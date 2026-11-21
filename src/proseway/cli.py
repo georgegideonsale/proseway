@@ -16,6 +16,9 @@ from .paths import default_data_dir
 
 def _port_free(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if sys.platform != "win32":
+            # Match how uvicorn binds, so a port in TIME_WAIT after a restart counts as free.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("127.0.0.1", port))
         except OSError:
@@ -28,7 +31,8 @@ def main(argv: list[str] | None = None) -> int:
         prog="proseway",
         description="Turn book PDFs you own into calm, reflowable reading editions. Runs only on this computer.",
     )
-    parser.add_argument("--port", type=int, default=8765, help="local port (default 8765)")
+    parser.add_argument("--port", type=int, default=None,
+                        help="local port (default 8765, or the next free one)")
     parser.add_argument("--data-dir", type=Path, default=None, help="where to keep your library")
     parser.add_argument("--no-browser", action="store_true", help="don't open a browser window")
     parser.add_argument("--version", action="version", version=f"proseway {__version__}")
@@ -42,14 +46,18 @@ def main(argv: list[str] | None = None) -> int:
 
     from .server import AppConfig, create_app
 
-    port = args.port
+    port = args.port or 8765
     if not _port_free(port):
+        if args.port:
+            # The user asked for this port: don't silently move somewhere else.
+            print(f"Port {port} is already in use. Choose another with --port.", file=sys.stderr)
+            return 1
         for candidate in range(port + 1, port + 20):
             if _port_free(candidate):
                 port = candidate
                 break
         else:
-            print(f"Port {args.port} is busy. Try --port.", file=sys.stderr)
+            print(f"Port {port} is busy. Try --port.", file=sys.stderr)
             return 1
 
     data_dir = (args.data_dir or default_data_dir()).expanduser().resolve()
