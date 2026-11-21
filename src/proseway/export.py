@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from typing import Any
 
 from . import __version__
@@ -149,8 +150,10 @@ def restore_backup(db: Database, paths: DataPaths, data: Any) -> dict[str, int]:
         raise BackupError("This backup was made by a newer version of Proseway.")
     stats = {"books_matched": 0, "books_waiting": 0, "annotations_added": 0, "annotations_updated": 0}
     for entry in data.get("books", []):
-        if not isinstance(entry, dict) or not isinstance(entry.get("sha256"), str):
-            raise BackupError("book entry without a file fingerprint")
+        if not isinstance(entry, dict) or not isinstance(entry.get("sha256"), str) or not re.fullmatch(
+            r"[0-9a-f]{64}", entry["sha256"]
+        ):
+            raise BackupError("book entry without a valid file fingerprint")
         anns = [_clean_annotation(a) for a in entry.get("annotations", [])]
         with db.connect() as c:
             book = c.execute("SELECT id FROM books WHERE sha256=?", (entry["sha256"],)).fetchone()
@@ -158,7 +161,9 @@ def restore_backup(db: Database, paths: DataPaths, data: Any) -> dict[str, int]:
             # Keep them until the matching PDF is imported.
             detached = paths.root / "detached-annotations"
             detached.mkdir(exist_ok=True)
-            f = detached / f"{entry['sha256'][:64]}.json"
+            f = detached / f"{entry['sha256']}.json"
+            if f.resolve().parent != detached.resolve():
+                raise BackupError("invalid file fingerprint")
             existing = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"annotations": []}
             known = {a["id"] for a in existing["annotations"]}
             existing["annotations"] += [a for a in anns if a["id"] not in known]

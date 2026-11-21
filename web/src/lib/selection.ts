@@ -11,6 +11,15 @@ export interface BlockRange {
   end: number;
 }
 
+const WORDCHAR = /[\p{L}\p{N}'’-]/u;
+
+export function snapToWords(text: string, start: number, end: number): { start: number; end: number } {
+  if (end <= start) return { start, end };
+  while (start > 0 && WORDCHAR.test(text[start - 1]) && WORDCHAR.test(text[start])) start--;
+  while (end < text.length && WORDCHAR.test(text[end]) && WORDCHAR.test(text[end - 1])) end++;
+  return { start, end };
+}
+
 function blockOf(node: Node | null): HTMLElement | null {
   let el: Node | null = node;
   while (el && !(el instanceof HTMLElement && el.dataset.block)) el = el.parentNode;
@@ -61,10 +70,12 @@ export function rangesFromSelection(sel: Selection | null, root: HTMLElement): B
     let end = len;
     if (k === i0 && bt.contains(range.startContainer)) start = offsetIn(bt, range.startContainer, range.startOffset);
     if (k === i1 && bt.contains(range.endContainer)) end = offsetIn(bt, range.endContainer, range.endOffset);
-    // Trim whitespace at the edges so highlights don't start or end on a space.
+    // Trim whitespace at the edges so highlights don't start or end on a space, then snap
+    // to whole words: a drag that stops mid-word almost always means the whole word.
     const text = bt.textContent ?? "";
     while (start < end && /\s/.test(text[start])) start++;
     while (end > start && /\s/.test(text[end - 1])) end--;
+    ({ start, end } = snapToWords(text, start, end));
     if (end > start) out.push({ blockId: b.dataset.block!, start, end });
   }
   return out;
