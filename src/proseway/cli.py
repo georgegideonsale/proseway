@@ -35,12 +35,28 @@ def main(argv: list[str] | None = None) -> int:
                         help="local port (default 8765, or the next free one)")
     parser.add_argument("--data-dir", type=Path, default=None, help="where to keep your library")
     parser.add_argument("--no-browser", action="store_true", help="don't open a browser window")
+    parser.add_argument("--new-phone-certificate", action="store_true",
+                        help="replace the certificate used for secure phone sharing, then exit "
+                             "(phones must trust the new one again)")
     parser.add_argument("--version", action="version", version=f"proseway {__version__}")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    if args.new_phone_certificate:
+        from . import certs
+
+        data_dir = (args.data_dir or default_data_dir()).expanduser().resolve()
+        files = certs.CertFiles(data_dir / "certs")
+        for p in (files.ca_cert, files.ca_key, files.server_cert, files.server_key):
+            p.unlink(missing_ok=True)
+        cert, _key = certs.ensure_ca(files)
+        print("  Made a new certificate for secure phone sharing.")
+        print(f"  SHA-256 fingerprint: {certs.fingerprint(cert)}")
+        print("  Remove the old Proseway certificate from your phones, then trust this one.")
+        return 0
 
     import uvicorn
 

@@ -489,6 +489,34 @@ img.cover {
   color: var(--ink-faint) !important;
   margin-top: var(--s-4) !important;
 }
+.toggle.share-secure {
+  align-items: flex-start;
+  margin-top: var(--s-4);
+  color: var(--ink);
+}
+.toggle.share-secure input {
+  flex: none;
+  margin-top: 2px;
+}
+.share-hint {
+  display: block;
+  margin-top: var(--s-1);
+  color: var(--ink-soft);
+}
+.fingerprint {
+  display: grid;
+  grid-template-columns: repeat(4, max-content);
+  gap: 2px var(--s-3);
+  margin-top: var(--s-2);
+  font-size: var(--text-xs);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 560px) {
+  .fingerprint {
+    grid-template-columns: repeat(2, max-content);
+  }
+}
 .share-grid {
   display: grid;
   grid-template-columns: 200px 1fr;

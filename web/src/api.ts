@@ -78,8 +78,8 @@ export const api = {
     return request<{ result: Record<string, number> }>("POST", "/api/restore", fd);
   },
   sharing: () => request<SharingState>("GET", "/api/sharing"),
-  setSharing: (enabled: boolean, address?: string, minutes?: number) =>
-    request<SharingState>("POST", "/api/sharing", { enabled, address, minutes }),
+  setSharing: (enabled: boolean, address?: string, minutes?: number, secure?: boolean) =>
+    request<SharingState>("POST", "/api/sharing", { enabled, address, minutes, secure }),
   newCode: () => request<SharingState>("POST", "/api/sharing/new-code"),
   revokeDevice: (id: string) => request<SharingState>("DELETE", `/api/devices/${id}`),
   pair: (secret: string) => request<{ ok: true }>("POST", "/api/pair", { secret }),

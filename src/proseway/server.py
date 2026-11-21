@@ -15,6 +15,7 @@ from fastapi import Body, FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 from . import __version__, epub, export, library
+from . import sharing as sharing_mod
 from .anchoring import make_anchor
 from .db import Database, now
 from .jobs import JobManager
@@ -27,6 +28,9 @@ log = logging.getLogger(__name__)
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
 ASSET_NAME = re.compile(r"^[A-Za-z0-9._-]{1,120}\.(?:jpg|png)$")
 RESTORE_LIMIT = 50 * 2**20
+UPLOAD_SLACK = 10 * 2**20  # multipart framing around the file(s)
+LOCAL_BODY_LIMIT = 20 * 2**20
+LAN_BODY_LIMIT = 2**20  # a phone only sends small JSON: annotations, notes, positions
 COLORS = {"yellow", "green", "blue", "pink", "purple"}
 
 # What a paired phone may do. Everything else is local-only.
@@ -67,11 +71,80 @@ def _error(status: int, message: str, code: str = "error") -> JSONResponse:
     return JSONResponse({"error": {"code": code, "message": message}}, status_code=status)
 
 
+def body_limit(path: str, is_lan: bool) -> int:
+    if is_lan:
+        return LAN_BODY_LIMIT
+    if path == "/api/books":
+        return library.MAX_UPLOAD_BYTES + UPLOAD_SLACK
+    if path == "/api/restore":
+        return RESTORE_LIMIT + 2**20
+    return LOCAL_BODY_LIMIT
+
+
+class BodyLimit:
+    """Refuse request bodies over the limit, whether or not they declare a Content-Length.
+
+    A declared length over the limit is refused before reading anything. Chunked bodies are
+    counted as they arrive; once one goes over, the app sees a disconnect and the client gets
+    a 413, so a multipart parser never spools more than the limit to disk.
+    """
+
+    def __init__(self, app, is_lan):
+        self.app = app
+        self.is_lan = is_lan
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] not in ("POST", "PUT", "PATCH", "DELETE"):
+            await self.app(scope, receive, send)
+            return
+        limit = body_limit(scope["path"], self.is_lan(scope))
+        declared = dict(scope.get("headers") or []).get(b"content-length")
+        if declared is not None:
+            if not declared.isdigit():
+                await _error(400, "Bad Content-Length.", "bad_request")(scope, receive, send)
+                return
+            if int(declared) > limit:
+                await _error(413, "That's too large.", "too_large")(scope, receive, send)
+                return
+
+        received = 0
+        started = refused = False
+
+        async def counted_receive():
+            nonlocal received, refused
+            if refused:
+                return {"type": "http.disconnect"}
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    refused = True
+                    if not started:
+                        await _error(413, "That's too large.", "too_large")(scope, receive, send)
+                    return {"type": "http.disconnect"}
+            return message
+
+        async def guarded_send(message):
+            nonlocal started
+            if refused:
+                return  # we already answered 413
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counted_receive, guarded_send)
+        except Exception:
+            if not refused:
+                raise
+            # The app gave up reading (ClientDisconnect or similar); the 413 is already sent.
+
+
 def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
     paths = config.paths
     db = Database(paths.db).init()
     jobs = JobManager(db, paths)
-    sharing = SharingManager(db)
+    sharing = SharingManager(db, cert_dir=paths.root / "certs")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -91,6 +164,10 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
     sharing.app = app
 
     # ------------------------------------------------------------------ security
+
+    # Added first, so it runs inside `guard` (Host and CSRF checks come first, and its 413s
+    # still get the security headers).
+    app.add_middleware(BodyLimit, is_lan=lambda scope: sharing.is_lan_request(scope))
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -127,15 +204,7 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
             origin = request.headers.get("origin")
             if origin and origin.split("://", 1)[-1].lower() != host.lower():
                 return _error(403, "Cross-origin request refused.", "csrf")
-            length = request.headers.get("content-length")
-            if path == "/api/books":
-                limit = library.MAX_UPLOAD_BYTES + 10 * 2**20
-            elif path == "/api/restore":
-                limit = RESTORE_LIMIT + 2**20
-            else:
-                limit = 20 * 2**20
-            if length and length.isdigit() and int(length) > limit:
-                return _error(413, "That file is too large.", "too_large")
+            # Body size limits: see BodyLimit.
 
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = CSP
@@ -530,7 +599,8 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
             except (TypeError, ValueError) as exc:
                 raise HTTPException(400, "Choose how long sharing should stay on.") from exc
             try:
-                sharing.enable(address, app.state.port, minutes=min(max(minutes, 5), 24 * 60))
+                sharing.enable(address, app.state.port, minutes=min(max(minutes, 5), 24 * 60),
+                               secure=bool(body.get("secure")))
             except (ValueError, OSError) as exc:
                 raise HTTPException(400, str(exc)) from exc
         else:
@@ -543,14 +613,27 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
             sharing.new_pairing()
         return sharing.public_state()
 
+    @app.get("/api/sharing/ca.crt")
+    def sharing_ca():
+        # Local only (not in LAN_ALLOWED): for sending the certificate to a phone some other
+        # way, such as AirDrop or a USB cable, instead of the plain-HTTP setup page.
+        return Response(sharing.ca_der(), media_type="application/x-x509-ca-cert",
+                        headers={"Content-Disposition": _attachment(sharing_mod.CA_DOWNLOAD_NAME)})
+
     @app.get("/api/sharing/qr.svg")
-    def sharing_qr():
+    def sharing_qr(target: str = "pair"):
         import segno
 
-        p = sharing.current_pairing()
-        if p is None:
-            raise HTTPException(404, "Sharing is off.")
-        qr = segno.make(f"{sharing.url()}/pair#t={p.token}", error="m")
+        if target == "setup":
+            if not sharing.setup_url():
+                raise HTTPException(404, "There's no setup page right now.")
+            content = sharing.setup_url()
+        else:
+            p = sharing.current_pairing()
+            if p is None:
+                raise HTTPException(404, "Sharing is off.")
+            content = f"{sharing.url()}/pair#t={p.token}"
+        qr = segno.make(content, error="m")
         import io
 
         buf = io.BytesIO()

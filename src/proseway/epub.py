@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ from datetime import datetime, timezone
 from . import __version__
 from .db import Database
 from .paths import DataPaths
+from .pipeline import extract
 from .render import block_html, escape
 
 CSS = """
@@ -34,10 +36,28 @@ span.pagebreak { display: none; }
 """
 
 
+LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*")
+
+
+def book_language(paths: DataPaths, book_id: str) -> str:
+    """The PDF's declared language as a BCP 47 tag, or "und" (undetermined) if it has none.
+
+    We never guess a language from the text: a wrong tag makes screen readers and e-readers
+    pronounce and hyphenate the book incorrectly, which is worse than no tag.
+    """
+    try:
+        lang = extract.read_metadata(paths.original_pdf(book_id)).get("language", "")
+    except Exception:
+        lang = ""
+    lang = (lang or "").strip().replace("_", "-")
+    return lang if len(lang) <= 35 and LANGUAGE_TAG.fullmatch(lang) else "und"
+
+
 def build_epub(db: Database, paths: DataPaths, book_id: str) -> bytes:
     with db.connect() as c:
         book = c.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
         rows = c.execute("SELECT * FROM blocks WHERE book_id=? ORDER BY seq", (book_id,)).fetchall()
+    lang = book_language(paths, book_id)
     title = book["title"][:-4] if book["title"].endswith(".pdf") else book["title"]
     toc = json.loads(book["toc_json"] or "[]")
     blocks = [{"id": r["id"], "type": r["type"], "page": r["page"], "level": r["level"], "text": r["text"],
@@ -80,7 +100,8 @@ def build_epub(db: Database, paths: DataPaths, book_id: str) -> bytes:
                              f'title="{b["page"]}" class="pagebreak"></span>')
             parts.append(block_html(b, asset_url, link_for))
         doc = ('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html>\n'
-               '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'
+               '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" '
+               f'xml:lang="{lang}" lang="{lang}">'
                f'<head><meta charset="utf-8"/><title>{escape(title)}</title>'
                '<link rel="stylesheet" type="text/css" href="style.css"/></head><body>'
                + "\n".join(parts) + "</body></html>")
@@ -113,7 +134,7 @@ def build_epub(db: Database, paths: DataPaths, book_id: str) -> bytes:
         '<?xml version="1.0" encoding="UTF-8"?>\n<package xmlns="http://www.idpf.org/2007/opf" version="3.0" '
         'unique-identifier="uid"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
         f'<dc:identifier id="uid">{uid}</dc:identifier><dc:title>{escape(title)}</dc:title>'
-        f'<dc:creator>{escape(book["author"] or "Unknown")}</dc:creator><dc:language>en</dc:language>'
+        f'<dc:creator>{escape(book["author"] or "Unknown")}</dc:creator><dc:language>{lang}</dc:language>'
         f'<meta property="dcterms:modified">{modified}</meta>'
         f'<meta name="generator" content="Proseway {__version__}"/></metadata><manifest>'
         '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'

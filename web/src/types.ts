@@ -111,6 +111,12 @@ export interface SharingState {
   port: number;
   url: string;
   scheme: string;
+  /** Sharing is on over HTTPS with Proseway's own certificate. */
+  secure: boolean;
+  secureAvailable: boolean;
+  /** Plain-HTTP page on the next port that serves only the certificate and phone steps. */
+  setupUrl: string;
+  ca: { fingerprint: string; name: string; expiresAt: number } | null;
   expiresAt: number | null;
   pairing: { code: string; expiresAt: number; url: string } | null;
   locked: boolean;

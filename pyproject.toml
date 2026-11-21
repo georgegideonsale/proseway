@@ -29,6 +29,8 @@ dependencies = [
   "psutil>=5.9",
   "rapidfuzz>=3.9",
   "segno>=1.6",
+  # Local CA and server certificate for HTTPS phone sharing. Already required by pdfminer.six.
+  "cryptography>=42",
 ]
 
 [project.optional-dependencies]
