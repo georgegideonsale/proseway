@@ -351,15 +351,18 @@ def _dedupe_overprint(chars: list[dict]) -> list[dict]:
     PDFium splits ligatures into their letters with one shared box: the "ff" of "officers"
     is two "f"s drawn one right after the other at the same spot. Those are real letters, so
     only a copy drawn at some other point in the content stream counts as a duplicate."""
-    seen: dict[tuple, int] = {}
+    seen: dict[tuple, dict] = {}
     out: list[dict] = []
     for c in chars:
         if c["text"].strip() and c["x1"] > c["x0"]:
             key = (c["text"], round(c["x0"]), round(c["top"]))
             first = seen.get(key)
-            if first is not None and abs(c.get("_i", 0) - first) > 1:
-                continue
-            seen[key] = c.get("_i", 0)
+            if first is not None:
+                ligature = abs(c.get("_i", 0) - first.get("_i", 0)) == 1 and (
+                    c["x0"], c["x1"], c["top"], c["bottom"]) == (first["x0"], first["x1"], first["top"], first["bottom"])
+                if not ligature:
+                    continue
+            seen[key] = c
         out.append(c)
     return out
 
@@ -406,7 +409,34 @@ def lines_from_chars(chars: list[dict]) -> list[dict]:
                 line = _build_line(part)
                 if line is not None:
                     lines.append(line)
-    return lines
+    return _drop_shadow_lines(lines)
+
+
+def _drop_shadow_lines(lines: list[dict]) -> list[dict]:
+    """Drop a line that repeats another line drawn almost on top of it (a drop shadow or
+    blur effect drawn as offset copies of the text). Real text never overlaps itself."""
+    from rapidfuzz import fuzz
+
+    def area(d: dict) -> float:
+        return max((d["x1"] - d["x0"]) * (d["bot"] - d["top"]), 0.01)
+
+    order = sorted(range(len(lines)), key=lambda i: lines[i]["top"])
+    drop: set[int] = set()
+    for a, i in enumerate(order):
+        li = lines[i]
+        for j in order[a + 1:]:
+            lj = lines[j]
+            if lj["top"] >= li["bot"]:
+                break  # sorted by top: nothing further down overlaps this line
+            if i in drop or j in drop:
+                continue
+            ix = min(li["x1"], lj["x1"]) - max(li["x0"], lj["x0"])
+            iy = min(li["bot"], lj["bot"]) - max(li["top"], lj["top"])
+            short, other = (i, j) if len(li["t"]) <= len(lj["t"]) else (j, i)
+            if (ix > 0 and iy > 0 and ix * iy >= 0.5 * area(lines[short]) and len(lines[short]["t"]) >= 4
+                    and fuzz.partial_ratio(lines[short]["t"], lines[other]["t"]) >= 90):
+                drop.add(short)
+    return [ln for k, ln in enumerate(lines) if k not in drop] if drop else lines
 
 
 # ---------------------------------------------------------------------------
@@ -696,31 +726,66 @@ def page_body_size(lines: list[dict]) -> float:
 
 
 def _is_caption(ln: dict) -> bool:
+    """'Figure 3: …', 'Table 2.1 Smoking levels …' — but not 'Table 1.15 contains …',
+    which is a sentence that refers to a table."""
     from .layout import CAPTION
 
-    return bool(CAPTION.match(ln["t"].strip()))
+    text = ln["t"].strip()
+    m = CAPTION.match(text)
+    if not m:
+        return False
+    rest = text[m.end():].lstrip(".0123456789 ")
+    return not rest or not rest[0].islower()
 
 
-def figure_text_ok(inside: list[dict], body: float) -> bool:
+def small_share(inside: list[dict], body: float) -> float:
+    """Share of the characters that are set clearly smaller than the body text."""
+    total = sum(len(ln["t"]) for ln in inside) or 1
+    return sum(len(ln["t"]) for ln in inside if ln["sz"] < body * SMALL_TEXT) / total
+
+
+def figure_text_ok(inside: list[dict], body: float, n_shapes: int = 1) -> bool:
     """Does the text inside a drawn area read as part of a figure rather than as prose?
 
-    Figure text is small (labels, annotated examples), or a scatter of short labels. A box
-    around normal-size sentences (a sidebar, a shaded note) or around code is not a figure,
-    and its text stays in the reading flow."""
+    Figure text is small (labels, annotated examples), or short labels scattered over a
+    drawing with many shapes (a diagram, a sunburst chart). A box around normal-size
+    sentences (a sidebar, a note, a worked example) or around code is not a figure, and its
+    text stays in the reading flow."""
     text = [ln for ln in inside if ln["t"].strip()]
     if not text:
         return True
     total = sum(len(ln["t"]) for ln in text) or 1
-    small = sum(len(ln["t"]) for ln in text if ln["sz"] < body * SMALL_TEXT)
     if sum(len(ln["t"]) for ln in text if ln.get("m") and ln["sz"] >= body * SMALL_TEXT) / total >= 0.5:
         return False  # a code listing in a box
-    if small / total >= 0.6:
+    if small_share(text, body) >= 0.6:
         return True
     prose = sum(len(ln["t"]) for ln in text if ln["sz"] >= body * SMALL_TEXT and len(ln["t"].split()) >= 7)
+    if n_shapes >= 100 and n_shapes >= 3 * len(text):
+        # A dense drawing (a chart with a normal-size legend): only text that is mostly
+        # sentences makes it a box of prose.
+        return prose / total <= 0.6
     if prose / total > 0.3:
         return False
     words = sorted(len(ln["t"].split()) for ln in text)
-    return len(text) >= 3 and words[len(words) // 2] <= 3
+    # Normal-size labels only count as figure text over a real drawing, not a box or two,
+    # and not when they line up in rows and columns: that is a table with shaded rows.
+    return (len(text) >= 3 and words[len(words) // 2] <= 3 and n_shapes >= 2 * len(text)
+            and not _grid_aligned(text))
+
+
+def _grid_aligned(text: list[dict]) -> bool:
+    """Most lines share a row with another line and a column edge with another line."""
+    def same_col(a: dict, b: dict) -> bool:
+        return (abs(a["x0"] - b["x0"]) < 2 or abs(a["x1"] - b["x1"]) < 2
+                or abs((a["x0"] + a["x1"]) - (b["x0"] + b["x1"])) < 4)
+
+    aligned = 0
+    for ln in text:
+        others = [o for o in text if o is not ln]
+        row = any(abs(o["top"] - ln["top"]) < 2 for o in others)
+        col = any(same_col(o, ln) and abs(o["top"] - ln["top"]) >= 2 for o in others)
+        aligned += row and col
+    return aligned >= 0.7 * len(text)
 
 
 def find_figures(lines: list[dict], images: list[dict], graphics: list, tables: list[dict],
@@ -782,17 +847,18 @@ def find_figures(lines: list[dict], images: list[dict], graphics: list, tables: 
         if region["vector"]:
             if not inside and region["n"] < 3:
                 continue
-            if not figure_text_ok(inside, body):
+            if not figure_text_ok(inside, body, region["n"]):
                 continue
-            # Aligned text with a few rules around it is a table; aligned value labels over a
-            # chart's many bars and gridlines are still a chart.
-            if region["n"] < 2 * len(inside) and _looks_like_table(inside):
+            # Aligned text with rules or shaded rows around it is a table. Small value labels
+            # aligned over a chart's many bars and gridlines are still a chart.
+            if (small_share(inside, body) < 0.6 or region["n"] < 30) and _looks_like_table(inside):
                 continue
             g = region["grown"]
             if not page_area * MIN_FIGURE_AREA_RATIO <= _area(g) <= page_area * 0.75:
                 continue
-            if min(g[2] - g[0], g[3] - g[1]) < MIN_FIGURE_SIDE * 0.66:
-                continue
+            short, long = sorted((g[2] - g[0], g[3] - g[1]))
+            if short < MIN_FIGURE_SIDE * (0.66 if inside else 1.0) or long > 8 * short:
+                continue  # rules, bars and banner strips are decoration, not figures
         elif inside and (not figure_text_ok(inside, body) or _area(region["box"]) > page_area * 0.5):
             # An image behind prose, or a scanned page under its own text layer: the text
             # stays in the reading flow.

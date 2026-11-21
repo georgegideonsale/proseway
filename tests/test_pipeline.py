@@ -175,6 +175,9 @@ def test_ligature_letters_are_not_taken_for_overprint():
     assert lines_from_chars(word)[0]["t"] == "officers"
     bold = [ch("B", 0), ch("e", 5), ch("d", 10), ch("B", 0.3), ch("e", 5.3), ch("d", 10.3)]
     assert lines_from_chars(bold)[0]["t"] == "Bed"
+    # A drop shadow: the same label drawn three times, 1.5 pt apart, reads once.
+    shadow = [ch(t, 6 * k + d) for d in (0, 1.5, 3.0) for k, t in enumerate("correct")]
+    assert [ln["t"] for ln in lines_from_chars(shadow)] == ["correct"]
 
 
 def test_scan_text_layer_is_not_figure_text():
