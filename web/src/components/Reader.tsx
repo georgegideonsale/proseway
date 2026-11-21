@@ -268,6 +268,13 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
     [manifest, chapters],
   );
 
+  // Know where we are as soon as text is on screen, not only after the first scroll.
+  useEffect(() => {
+    if (!win) return;
+    const id = window.requestAnimationFrame(() => updatePosition());
+    return () => window.cancelAnimationFrame(id);
+  }, [win, chapters, updatePosition]);
+
   useEffect(() => {
     const onScroll = () => {
       const y = window.scrollY;
@@ -278,8 +285,16 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
       }
       window.requestAnimationFrame(updatePosition);
     };
+    // Desktop: bring the toolbar back when the pointer heads for the top edge.
+    const onMove = (e: MouseEvent) => {
+      if (e.clientY < 72) setChrome(true);
+    };
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    window.addEventListener("mousemove", onMove, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("mousemove", onMove);
+    };
   }, [updatePosition]);
 
   // Save the reading position shortly after it changes, and when the page is hidden.

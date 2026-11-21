@@ -34,3 +34,6 @@ Thumbs.db
 # Secrets (none should exist, but just in case)
 .env
 .env.*
+
+# Playwright
+web/e2e/.cache/
