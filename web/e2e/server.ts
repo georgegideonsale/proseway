@@ -7,9 +7,11 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PY = process.env.PROSEWAY_PYTHON ?? (process.platform === "win32" ? join(ROOT, ".venv", "Scripts", "python.exe") : join(ROOT, ".venv", "bin", "python"));
 
-export function makeFixture(): string {
-  const out = join(mkdtempSync(join(tmpdir(), "pw-fixture-")), "A Quiet Valley.pdf");
-  const r = spawnSync(PY, [join(ROOT, "tests", "make_e2e_fixture.py"), out], { encoding: "utf8" });
+/** "novel": 3 pages, one chapter. "long": 6 chapters of 3 pages each, for chapter windowing. */
+export function makeFixture(kind: "novel" | "long" = "novel"): string {
+  const name = kind === "long" ? "A Long Valley.pdf" : "A Quiet Valley.pdf";
+  const out = join(mkdtempSync(join(tmpdir(), "pw-fixture-")), name);
+  const r = spawnSync(PY, [join(ROOT, "tests", "make_e2e_fixture.py"), out, kind], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`fixture failed: ${r.stderr}`);
   return out;
 }

@@ -165,3 +165,30 @@ def make_encrypted(path: Path) -> None:
     c = canvas.Canvas(str(path), pagesize=letter, encrypt=enc)
     c.drawString(72, 700, "Secret text")
     c.save()
+
+
+CHAPTER_NAMES = ["One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"]
+
+
+def make_long_book(path: Path, chapters: int = 6, pages_per_chapter: int = 3) -> list[str]:
+    """Several chapters, each starting on a new page with a "Chapter N" heading, for reader
+    windowing tests. Every paragraph names its chapter and number, so each block is unique and
+    easy to find. Returns the chapter headings."""
+    d = Doc(path, title="A Long Valley", running_header="A LONG VALLEY")
+    headings = []
+    for ci in range(chapters):
+        if ci:
+            d.new_page()
+        name = CHAPTER_NAMES[ci]
+        heading = f"Chapter {name}"
+        headings.append(heading)
+        d.heading(heading)
+        start = d.page
+        k = 0
+        while d.page < start + pages_per_chapter:
+            k += 1
+            d.paragraph(f"Paragraph {k} of chapter {name.lower()}. " + NOVEL_PARAS[k % len(NOVEL_PARAS)])
+            if k > 200:
+                break
+    d.save()
+    return headings

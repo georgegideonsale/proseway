@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { api } from "../api";
 import type { Session } from "../App";
 import { usePrefs } from "../lib/prefs";
+import { chaptersToEvict, growWindow } from "../lib/chapterWindow";
 import { cpLength } from "../lib/offsets";
 import { navigate } from "../lib/router";
 import { rangesFromSelection, type BlockRange } from "../lib/selection";
@@ -140,6 +141,7 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
           loading.current.set(start, Promise.resolve(r.blocks));
           setChapters(new Map([[start, r.blocks]]));
         });
+        winRef.current = [start, start];
         setWin([start, start]);
       } catch (e) {
         if (alive) setError((e as Error).message);
@@ -152,26 +154,67 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
 
   /* ----------------------------------------------------------- window growth */
 
+  // Only a few chapters stay mounted (see lib/chapterWindow). `winRef` mirrors `win` so async
+  // loads that finish out of order always build on the latest window, not a stale closure.
+  const winRef = useRef<[number, number] | null>(null);
+
+  const applyWin = useCallback(
+    (next: [number, number]) => {
+      const prev = winRef.current;
+      winRef.current = next;
+      // Don't strand keyboard focus inside a chapter that's about to unmount.
+      const active = document.activeElement as HTMLElement | null;
+      const sec = active?.closest<HTMLElement>("section.chapter");
+      if (sec) {
+        const ch = Number(sec.dataset.chapter);
+        if (ch < next[0] || ch > next[1]) document.getElementById("reading")?.focus({ preventScroll: true });
+      }
+      setWin(next);
+      if (prev && prev[0] === next[0] && prev[1] === next[1]) return;
+      // Let go of downloaded blocks far from the window; they reload on demand.
+      setChapters((m) => {
+        const drop = chaptersToEvict(m.keys(), next);
+        if (!drop.length) return m;
+        const out = new Map(m);
+        for (const c of drop) {
+          out.delete(c);
+          loading.current.delete(c);
+        }
+        return out;
+      });
+    },
+    [],
+  );
+
+  /** The chapter at the top of the screen, read from the DOM so it's current even mid-scroll. */
+  function currentChapter(): number | null {
+    const sec = firstVisibleBlock()?.closest<HTMLElement>("section.chapter");
+    if (sec) return Number(sec.dataset.chapter);
+    return null;
+  }
+
   const extend = useCallback(
     async (dir: "up" | "down") => {
-      if (!win || !manifest) return;
-      const [lo, hi] = win;
+      if (!winRef.current || !manifest) return;
+      const [lo, hi] = winRef.current;
       const last = manifest.chapters[manifest.chapters.length - 1].idx;
       const next = dir === "down" ? hi + 1 : lo - 1;
       if (next < 0 || next > last) return;
       await loadChapter(next);
-      if (dir === "up") {
-        // Remember where the first visible block is, so prepending doesn't move the text.
+      const w = winRef.current;
+      if (!w) return;
+      const cur = currentChapter() ?? pos?.chapter ?? w[0];
+      const grown = growWindow(w, next, cur);
+      if (grown === w) return;
+      if (grown[0] !== w[0]) {
+        // Content is being added or removed above the screen: remember where the first visible
+        // block is, so the layout effect can put it back and the text doesn't move.
         const el = firstVisibleBlock();
         if (el) anchor.current = { id: el.dataset.block!, top: el.getBoundingClientRect().top };
       }
-      setWin((w) => {
-        if (!w) return w;
-        const [a, b] = w;
-        return dir === "down" ? [a, Math.max(b, next)] : [Math.min(a, next), b];
-      });
+      applyWin(grown);
     },
-    [win, manifest, loadChapter],
+    [manifest, loadChapter, applyWin, pos?.chapter],
   );
 
   useLayoutEffect(() => {
@@ -200,6 +243,16 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
     }
   });
 
+  // A window chapter whose cached blocks were let go (or never arrived) is fetched again.
+  useEffect(() => {
+    if (!win) return;
+    for (let c = win[0]; c <= win[1]; c++) if (!chapters.has(c)) loadChapter(c).catch(() => {});
+  }, [win, chapters, loadChapter]);
+
+  // Rebuilt when the window or the current chapter changes: an IntersectionObserver reports a
+  // sentinel's state once on observe, then only on changes, so a request that was refused (the
+  // new chapter would have been the one dropped) gets retried once the reader moves on.
+  const readingChapter = pos?.chapter;
   useEffect(() => {
     if (!win) return;
     const top = document.getElementById("sentinel-top");
@@ -217,7 +270,7 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
     if (top) io.observe(top);
     if (bottom) io.observe(bottom);
     return () => io.disconnect();
-  }, [win, extend]);
+  }, [win, extend, readingChapter]);
 
   /* ----------------------------------------------------------- position */
 
@@ -334,12 +387,11 @@ export function Reader({ bookId, session }: { bookId: string; session: Session }
       setPanel((p) => (window.matchMedia("(max-width: 900px)").matches ? null : p));
       await loadChapter(t.chapter);
       pendingScroll.current = { blockId: t.blockId || undefined, seq: t.seq >= 0 ? t.seq : undefined, flash: opts.flash };
-      setWin((w) => {
-        if (w && t.chapter >= w[0] && t.chapter <= w[1]) return [w[0], w[1]];
-        return [t.chapter, t.chapter];
-      });
+      const w = winRef.current;
+      // A new array either way, so the layout effect runs and performs the pending scroll.
+      applyWin(w && t.chapter >= w[0] && t.chapter <= w[1] ? [w[0], w[1]] : [t.chapter, t.chapter]);
     },
-    [pos, loadChapter],
+    [pos, loadChapter, applyWin],
   );
 
   /* ----------------------------------------------------------- annotations */
