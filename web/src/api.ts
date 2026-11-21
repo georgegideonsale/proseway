@@ -78,6 +78,7 @@ export const api = {
   reconvert: (id: string) => request<{ book: Book }>("POST", `/api/books/${id}/reconvert`),
   manifest: (id: string) => request<Manifest>("GET", `/api/books/${id}/manifest`),
   chapter: (id: string, idx: number) => request<{ index: number; blocks: Block[] }>("GET", `/api/books/${id}/chapters/${idx}`),
+  block: (id: string, blockId: string) => request<{ chapter: number; block: Block }>("GET", `/api/books/${id}/blocks/${encodeURIComponent(blockId)}`),
   search: (id: string, q: string) => request<{ results: SearchResult[]; total: number }>("GET", `/api/books/${id}/search?q=${encodeURIComponent(q)}`),
   annotations: (id: string) => request<{ annotations: Annotation[] }>("GET", `/api/books/${id}/annotations`),
   createAnnotation: (

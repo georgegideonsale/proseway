@@ -402,6 +402,23 @@ def create_app(config: AppConfig, start_jobs: bool = True) -> FastAPI:
             ],
         }
 
+    @app.get("/api/books/{book_id}/blocks/{block_id}")
+    def block(book_id: str, block_id: str) -> dict[str, Any]:
+        """One block and its chapter: lets the reader show a note whose chapter isn't loaded."""
+        get_book(book_id)
+        with db.connect() as c:
+            r = c.execute(
+                "SELECT seq, id, type, page, level, text, data_json, chapter FROM blocks WHERE book_id=? AND id=?",
+                (book_id, block_id),
+            ).fetchone()
+        if not r:
+            raise HTTPException(404, "No such passage.")
+        return {
+            "chapter": r["chapter"],
+            "block": {"seq": r["seq"], "id": r["id"], "type": r["type"], "page": r["page"], "level": r["level"],
+                      "text": r["text"], "data": json.loads(r["data_json"])},
+        }
+
     @app.get("/api/books/{book_id}/search")
     def search(book_id: str, q: str = "", limit: int = 50) -> dict[str, Any]:
         get_book(book_id)
