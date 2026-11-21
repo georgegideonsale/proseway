@@ -3,4 +3,4 @@
 __version__ = "0.1.0"
 
 # Bump when the conversion output changes in a way that warrants re-converting.
-PIPELINE_VERSION = 1
+PIPELINE_VERSION = 2

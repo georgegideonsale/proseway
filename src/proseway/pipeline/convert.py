@@ -162,7 +162,9 @@ def _store(db: Database, book_id: str, rows: list[dict], result: dict) -> None:
         )
         c.executemany(
             "INSERT INTO blocks_fts(text, book_id, block_id) VALUES (?,?,?)",
-            [(r["text"], book_id, r["id"]) for r in rows if r["text"]],
+            # Text drawn inside a figure is searchable and leads to the figure.
+            [(r["text"] or r["data"].get("figure_text", ""), book_id, r["id"])
+             for r in rows if r["text"] or r["data"].get("figure_text")],
         )
         # Re-anchor existing annotations against the new blocks (re-conversion or restore).
         anns = c.execute("SELECT * FROM annotations WHERE book_id=?", (book_id,)).fetchall()
