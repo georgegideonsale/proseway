@@ -106,8 +106,11 @@ folds this in.
 - Full Playwright `--project=phone`: **not cleanly green on this machine today.** Several
   runs failed with `browserContext.newPage: Target crashed`, and servers failed to start,
   in specs this branch doesn't touch (`reading.spec.ts`, `a11y.spec.ts`) as well as the new
-  one. Free RAM was ~880 MB while other sessions ran their own suites. Please re-run the
-  phone project on CI or on a quieter machine.
+  one. Free RAM was ~880 MB while other sessions ran their own suites. In the last run,
+  after the commits, 6 tests passed, including both sharing tests, and 1 was skipped. Both
+  failures were in `a11y.spec.ts` "reader and notes panel": a 90 s timeout and "Target
+  crashed". Neither was an axe violation. Please re-run the phone project on CI or on a
+  quieter machine.
 
 ## Needs a real phone (Untested)
 
