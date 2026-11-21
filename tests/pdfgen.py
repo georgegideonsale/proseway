@@ -192,3 +192,33 @@ def make_long_book(path: Path, chapters: int = 6, pages_per_chapter: int = 3) ->
                 break
     d.save()
     return headings
+
+
+def make_short_start_book(path: Path, short: int = 4, chapters: int = 4, pages_per_chapter: int = 2) -> list[str]:
+    """Like a real book's front matter: `short` tiny chapters ("Prelude One"…, one line each, a
+    page apiece) before `chapters` full ones. Catches a reader that stalls behind short chapters.
+    Returns all the headings in order."""
+    d = Doc(path, title="A Short Start", running_header="A SHORT START")
+    headings = []
+    for si in range(short):
+        if si:
+            d.new_page()
+        heading = f"Prelude {CHAPTER_NAMES[si]}"
+        headings.append(heading)
+        d.heading(heading)
+        d.paragraph(f"A short note before the story, number {si + 1}.")
+    for ci in range(chapters):
+        d.new_page()
+        name = CHAPTER_NAMES[ci]
+        heading = f"Chapter {name}"
+        headings.append(heading)
+        d.heading(heading)
+        start = d.page
+        k = 0
+        while d.page < start + pages_per_chapter:
+            k += 1
+            d.paragraph(f"Paragraph {k} of chapter {name.lower()}. " + NOVEL_PARAS[k % len(NOVEL_PARAS)])
+            if k > 200:
+                break
+    d.save()
+    return headings

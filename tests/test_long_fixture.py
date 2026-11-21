@@ -21,3 +21,16 @@ def test_long_book_converts_into_one_chapter_per_heading(lib, tmp_path):
         if r["type"] == "paragraph" and r["text"].startswith("Paragraph "):
             name = r["text"].split(" of chapter ")[1].split(".")[0]
             assert headings[r["chapter"]] == f"Chapter {name.capitalize()}"
+
+
+def test_short_start_book_keeps_its_tiny_front_chapters(lib, tmp_path):
+    paths, db = lib
+    pdf = tmp_path / "short.pdf"
+    headings = pdfgen.make_short_start_book(pdf, short=4, chapters=4, pages_per_chapter=2)
+    book_id = convert(paths, db, pdf)
+    assert book_row(db, book_id)["status"] == "ready"
+    rows = blocks(db, book_id)
+    assert sorted({r["chapter"] for r in rows}) == list(range(8))
+    assert [r["text"] for r in rows if r["type"] == "heading"] == headings
+    for ch in range(4):
+        assert len([r for r in rows if r["chapter"] == ch]) <= 3  # heading + a line
