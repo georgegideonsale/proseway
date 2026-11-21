@@ -90,9 +90,66 @@ v0.2 work is done on separate branches, one per task. Each one is reviewed (code
 - Safari, Firefox and real phones, including iOS momentum scrolling combined with the scroll correction and the hold.
 - Memory use wasn't measured on a real 1,000-page book. The window is bounded by design and by the e2e counts, but heap and DOM size weren't benchmarked.
 
-### Still in review
+### Merged: Pipeline with figures, tables without ruling lines, and OCR pages (`claude/pipeline-quality-50d649`, details in `docs/progress/pipeline-quality.md`)
 
-- **Pipeline: figures, tables without ruling lines, OCR headers** (`claude/pipeline-quality-50d649`). An independently built alternative, kept as `keep/pipeline-quality-7fe68e`, was reviewed and not chosen.
+A second branch built the same task independently. It was reviewed and not chosen, and its commits are kept as `keep/pipeline-quality-7fe68e`. Its best guards and its deterministic OCR test fixture were ported into this branch.
+
+**What it adds:**
+- **Text inside figures:**
+  - labels drawn inside diagrams and screenshots stay with the figure, as searchable `figure_text`, instead of coming out as garbled paragraphs;
+  - large type (a title over an ornament), framed prose, notes in small type and the second lines of captions stay in the reading flow;
+  - empty exercise tables and boxed formulas stay as text.
+- **Tables without ruling lines** are detected conservatively, page by page and column by column. Prose, two-column text, display maths, numbered lists and back-of-book indexes are not turned into tables. Tables and figures in the right column are placed in their own column.
+- **OCR'd pages:**
+  - running heads and heading sizes are handled correctly on OCR'd pages;
+  - scans that carry their own OCR text layer are recognised by the scanner's own signal (mostly invisible text over images that cover the page) and skip the column, untangle, shadow and table passes;
+  - born-digital pages never take that path, so full-bleed artwork and big photos keep their figures and normal reading order.
+- **Faithful-text guards:** two passes remove duplicated text: glyphs drawn twice for fake bold, and drop-shadow copies of lines.
+  - Both now require the copies to match closely in size and position. A copy must overlap at least half a glyph's width.
+  - Both count what they remove (`stats.removed`).
+  - Tracing Gibbon with this guard in place found and fixed a real deletion: a squeezed OCR "ff" had become "diference".
+- `PIPELINE_VERSION` is 2. It is recorded on each converted book, but nothing uses it yet: books converted earlier keep their old blocks until "Convert again", and the app doesn't prompt you.
+
+**Benchmark** (the worker's runs with `scripts/benchmark.py`, each book on its own, PDFium engine, against main's pipeline; not re-run by the coordinator):
+
+| Book | Main: layer recall / order / ref similarity | Now |
+|---|---|---|
+| Gibbon vol. 1 (scan with its own OCR layer) | 0.9616 / 0.7210 / 0.6455 | identical, same word count |
+| OpenStax *University Physics 1* | 0.9682 / 0.9539 / – | **0.9693 / 0.9569** / – |
+| *Pride and Prejudice* | 0.9506 / 0.9671 / 0.9683 | identical |
+| *Sleepy Hollow* | 0.9456 / 0.9637 / 0.9748 | 0.9477 / 0.9634 / 0.9734 |
+| arXiv *Self-Instruct* (two columns) | 0.9401 / 0.6779 / 0.3679 | 0.9080 / **0.8635 / 0.5274** |
+| arXiv *Erdős discrepancy* | 0.9369 / 0.8649 / 0.7501 | 0.9363 / 0.8644 / 0.7502 |
+| OpenStax *Introductory Statistics* | 0.9523 / 0.9667 / – | 0.9553 / 0.9693 / – |
+| *Trifles* (OCR add-on), precision | 0.8521 | **0.8585** |
+
+Notes on the table:
+- **Self-Instruct layer recall:** it falls because words drawn inside figures now live in `figure_text` instead of in the reading flow. Counting `figure_text`, it is 0.949.
+- **Sleepy Hollow:** a decorative fake-bold banner now reads as one clean line.
+
+**Working (verified by running it):**
+- **pytest on main after the merge:** 106 passed, 1 skipped (POSIX-only). That includes 70 on the branch, with positive and negative fixtures for every rule, covering:
+  - ornament titles;
+  - framed 7 pt notes with captions;
+  - two 39% photos with visible text keeping both figures;
+  - columns over a full-bleed photo read in order;
+  - scans stored as three strips;
+  - "Ibid." at another size surviving the shadow pass;
+  - the squeezed "ff";
+  - a deterministic fake OCR that reproduces *Trifles*' noise and checks page numbers.
+- **Both engines:** the new tests run with PDFium and with pdfplumber.
+- **Playwright on main after the merge:** desktop 15/15 and phone 14 passed with 1 skipped by design, counting re-runs after Chromium crashes. No test failed an assertion.
+
+**Untested or left:**
+- The benchmark wasn't run with the pdfplumber engine.
+- Scans whose OCR text is visible (drawn under the image) aren't recognised as scans. No test book has one.
+- A very narrow framed note in small type, or one with a vector icon, could still be moved into `figure_text`.
+- Centred two-line captions aren't detected.
+- `stats.removed` isn't shown in the UI.
+- Maths drawn as vector paths beside the body text (the Physics answer keys) isn't shown, the same as on main.
+- The reader and the EPUB don't use `figure_text` yet; the image alt text is still "Figure on page N".
+- Tables whose cells sit very close together aren't found, and multi-row headers come out as two rows.
+- The full list is in `docs/progress/pipeline-quality.md`, under "What didn't improve, and what's left".
 
 ## Summary
 
@@ -213,9 +270,9 @@ A separate reviewer agent, which hadn't seen the build process, reviewed the cod
 
 ## Known issues
 
-1. **Figures with text inside them** (diagrams, annotated screenshots) can produce garbled lines, because the text boxes overlap. We should treat text inside figure areas as part of the figure.
-2. **Tables without ruling lines** aren't detected as tables. Their cells come out as short paragraphs.
-3. **OCR quality** on old scans is moderate. The OCR'd heading sizes are estimates, so some OCR lines are classed as headings.
+1. **Figures with text inside them:** since v0.1.0, text inside figure regions stays with the figure as searchable `figure_text`, instead of becoming garbled paragraphs. The reader and the EPUB don't show `figure_text` yet; the alt text is still "Figure on page N".
+2. **Tables without ruling lines:** since v0.1.0 they're detected conservatively. Tables whose cells sit very close together aren't found yet, multi-row headers come out as two rows, and the detector is off on OCR'd pages.
+3. **OCR quality** on old scans is still moderate (small caps are misread, and some stamps survive). Since v0.1.0, OCR'd heading sizes and running heads no longer turn OCR lines into headings, and scans with their own OCR layer take a safer path.
 4. **The table of contents** comes from the PDF outline when there is one, and otherwise from the detected headings. Books with neither get "Pages X–Y" chunks.
 5. **Phone sharing over HTTPS** is now the default (since v0.1.0, see above), with plain HTTP as an explicit fallback. It hasn't been tried with a real phone yet.
 6. **GitHub private vulnerability reporting** can only be enabled once the repo is public. SECURITY.md already points to it. Enable it with `gh api -X PUT repos/georgegideonsale/proseway/private-vulnerability-reporting` after publishing.
@@ -257,6 +314,6 @@ Six vetted skills are pinned in `.claude/skills/`, each with an `UPSTREAM` file:
    - push the `v0.1.0` tag, which triggers the release job that attaches the wheel;
    - optionally publish to PyPI so the install becomes `uv tool install proseway`.
 2. HTTPS for phone sharing is built (see "Since v0.1.0"). Next: try it with a real iPhone and Android phone, covering certificate install, name-constraint enforcement, and installing the app for offline reading.
-3. Pipeline: treat text inside figure regions as part of the figure; detect tables without ruling lines; adapt header detection for OCR'd pages.
+3. Pipeline (the first round is done, see "Since v0.1.0"): show `figure_text` as alt text in the reader and EPUB; detect tables whose cells sit close together, and multi-row headers; recognise scans whose OCR text is visible.
 4. A side-by-side "original page" view, to check conversions and look at complex figures.
 5. Test with screen readers (NVDA, VoiceOver), and open the EPUB export in KOReader and Apple Books.

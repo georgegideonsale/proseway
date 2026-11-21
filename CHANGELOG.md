@@ -14,18 +14,25 @@ All notable changes to this project are documented here. The format follows [Kee
 - **Bounded chapter window in the reader:** only chapters near your reading position stay mounted, so memory stays bounded on long books.
 - **Note lookup:** footnotes and endnotes in unloaded chapters cost one request, to the new `GET /api/books/{id}/blocks/{block_id}`.
 - **Reader announcements:** a polite live region announces jumps and note lookups. `aria-busy` is set while a jump is in progress.
+- **Text inside figures:** labels drawn inside diagrams and screenshots are kept with the figure as searchable `figure_text`, instead of becoming garbled paragraphs.
+- **Tables without ruling lines:** detected conservatively, per page and per column. Prose, maths, lists and indexes stay as text.
+- **Scans with their own OCR layer:** recognised by their invisible text, and they take a safer path through layout.
 
 ### Changed
 - **Pairing cookies:** separate for each scheme. `__Host-pw_device` over HTTPS, with its own token hash, so a token issued over HTTP doesn't work over HTTPS.
 - **Unpairing a phone:** it now clears that phone's offline copies (`Clear-Site-Data`, and the service worker drops its caches on a 401). Book images are fetched network-first.
 - **Sharing dialog:** focus moves to each step's heading, and labels are visually hidden instead of using `aria-label` on code elements.
 - **e2e tests:** each test server gets its own OS-assigned port.
+- **Pipeline version** is now 2, recorded on each converted book. Existing books keep their old conversion until you choose "Convert again"; nothing prompts you yet.
 
 ### Fixed
 - **Request size limits** now apply to bodies as they stream in, including chunked uploads without `Content-Length`.
 - **Contents panel:** closing it no longer blanks the reader in current Chromium.
 - **Saved position on phones:** restoring it no longer lands a few paragraphs late. A jump's target is held in place against layout shifts.
 - **Rapid jumps:** when you make several in a row, the last one wins.
+- **OCR'd pages:** running heads and noisy lines are no longer classed as headings.
+- **Duplicate-text removal:** the fake-bold and drop-shadow passes now require copies to match closely in size and position. They no longer delete real letters (a squeezed "ff" in a scan's OCR layer) or short lines, and they count what they remove.
+- **Right-column layout:** figures and tables in the right column are placed in their own column.
 
 ### Security
 - **CA:** never silently replaced; a damaged or expiring CA is reported as an error. Keys are owner-only on POSIX and Windows.
