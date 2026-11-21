@@ -467,3 +467,64 @@ def make_scan_with_text_layer(path: Path, pages: int = 2, strips: int = 1) -> No
         c.drawText(t)
         c.showPage()
     c.save()
+
+
+def _photo(seed: int, size: tuple[int, int]):
+    """A picture with real content (a gradient and stripes), not a flat tone."""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", size, (200 - 30 * seed, 160, 120 + 40 * seed))
+    d = ImageDraw.Draw(img)
+    for k in range(0, size[0], 12):
+        d.line([(k, 0), (k + size[1] // 2, size[1])], fill=(40 * seed, 90, 160), width=3)
+    return img
+
+
+PHOTO_PAGE_TEXT = [
+    "The two photographs on this page show the harbour before and after the storm of that",
+    "winter, taken from the same window of the customs house by the same photographer, who",
+    "waited three days for the light to match. Readers will notice the missing pier and the",
+    "boats drawn up on the shingle where the road used to run along the edge of the water.",
+]
+
+
+def make_photo_page(path: Path) -> list[str]:
+    """A born-digital page: two large photographs (about 40% of the page each) and a few
+    lines of visible body text. Both photographs are figures."""
+    from reportlab.lib.utils import ImageReader
+
+    c = canvas.Canvas(str(path), pagesize=letter)
+    # 576 x 330 pt each: 39% of the page apiece, 78% together, 20 pt apart.
+    c.drawImage(ImageReader(_photo(1, (400, 250))), 18, 370, width=576, height=330)
+    c.drawImage(ImageReader(_photo(2, (400, 250))), 18, 20, width=576, height=330)
+    c.setFont(*BODY)
+    y = H - 30
+    for line in PHOTO_PAGE_TEXT:  # in the band above the first photograph
+        c.drawString(40, y, line)
+        y -= 14
+    c.showPage()
+    c.save()
+    return PHOTO_PAGE_TEXT
+
+
+def make_two_column_over_background(path: Path, gutter: float = 12.0) -> tuple[list[str], list[str]]:
+    """A designed page: a full-bleed background photograph under justified two-column text
+    with a narrow gutter. The text is visible, so this is not a scan."""
+    from reportlab.lib.utils import ImageReader
+
+    d = Doc(path, title="Two Columns Over A Photo", running_header="")
+    d.c.drawImage(ImageReader(_photo(0, (300, 400))), 0, 0, width=W, height=H)
+    d.heading("A Study of Columns", 16)
+    colw = (W - 144 - gutter) / 2
+    left = ["Left column paragraph number %d talks about the first half of the argument in plain words "
+            "so that the reader can follow along without trouble." % i for i in range(1, 4)]
+    right = ["Right column paragraph number %d continues the argument and should only be read after the "
+             "whole left column has been finished." % i for i in range(1, 4)]
+    top = d.y
+    for p in left:
+        d.paragraph(p, x=72, width=colw, justify=True)
+    d.y = top
+    for p in right:
+        d.paragraph(p, x=72 + colw + gutter, width=colw, justify=True)
+    d.save()
+    return left, right

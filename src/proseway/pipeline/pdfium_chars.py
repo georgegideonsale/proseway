@@ -56,8 +56,35 @@ def _scale(textpage, index: int, cache: dict) -> float:
     return scale
 
 
+_INVISIBLE = 3  # text render mode "neither fill nor stroke": how scanners lay OCR text over the image
+
+
+def _invisible(textpage, index: int, cache: dict) -> bool:
+    obj = raw.FPDFText_GetTextObject(textpage, index)
+    if not obj:
+        return False
+    key = ctypes.cast(obj, ctypes.c_void_p).value
+    if key not in cache:
+        cache[key] = raw.FPDFTextObj_GetTextRenderMode(obj) == _INVISIBLE
+    return cache[key]
+
+
+def invisible_share(page: pdfium.PdfPage) -> float:
+    """Share of the page's characters drawn as invisible text (an OCR layer over a scan)."""
+    tp = page.get_textpage()
+    try:
+        t = tp.raw
+        cache: dict = {}
+        n = raw.FPDFText_CountChars(t)
+        objs = [k for k in range(n) if raw.FPDFText_GetTextObject(t, k)]
+        return sum(_invisible(t, k, cache) for k in objs) / len(objs) if objs else 0.0
+    finally:
+        tp.close()
+
+
 def page_chars(page: pdfium.PdfPage) -> tuple[list[dict], float, float]:
-    """Return (chars, width, height) for a page, in top-left page coordinates."""
+    """Return (chars, width, height) for a page, in top-left page coordinates. Characters
+    drawn as invisible text (render mode 3) carry "invisible": True."""
     w, h = page.get_size()
     try:
         left, bottom, _right, _top = page.get_cropbox()
@@ -69,6 +96,7 @@ def page_chars(page: pdfium.PdfPage) -> tuple[list[dict], float, float]:
     rect = raw.FS_RECTF()
     cache: dict = {}
     scale_cache: dict = {}
+    mode_cache: dict = {}
     buf = (ctypes.c_char * 256)()
     chars: list[dict] = []
     try:
@@ -114,13 +142,16 @@ def page_chars(page: pdfium.PdfPage) -> tuple[list[dict], float, float]:
             angle = raw.FPDFText_GetCharAngle(t, i)
             upright = angle < 0 or min(abs(angle), abs(angle - 2 * math.pi)) < 0.05
             size = raw.FPDFText_GetFontSize(t, i) * _scale(t, i, scale_cache)
-            chars.append({
+            ch = {
                 "text": text,
                 "fontname": _font_name(t, i, cache, buf),
                 "size": round(size if size > 0 else (bot - top) * 0.8, 2),
                 "x0": x0, "x1": x1, "top": top, "bottom": bot,
                 "upright": upright,
-            })
+            }
+            if _invisible(t, i, mode_cache):
+                ch["invisible"] = True
+            chars.append(ch)
     finally:
         tp.close()
     # Generated spaces get the position of their left neighbour so sorting keeps them inline.

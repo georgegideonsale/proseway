@@ -277,16 +277,54 @@ def test_framed_note_and_caption_lines_stay_in_the_flow():
 
 
 def test_scan_layer_detection():
-    """Total image coverage decides, not one page-sized image; a few words are enough."""
-    from proseway.pipeline.extract import _is_scan_layer
+    """A scan's OCR layer is invisible text over images covering most of the page (their
+    union, clipped to it). Visible text never makes a page a scan, whatever is behind it."""
+    from proseway.pipeline.extract import _drop_scan_backgrounds, _image_union, _is_scan_layer
 
     w, h = 612.0, 792.0
     strips = [(0.0, k * h / 3, w, (k + 1) * h / 3) for k in range(3)]
-    assert _is_scan_layer(25, strips, w, h)  # a sparse title page tiled into strips
-    assert _is_scan_layer(25, [(10.0, 20.0, 600.0, 700.0)], w, h)  # cropped a little: 82% of the page
-    assert not _is_scan_layer(0, strips, w, h)  # no text layer at all
-    assert not _is_scan_layer(900, [(72.0, 72.0, 540.0, 400.0)], w, h)  # a page with a figure
-    assert not _is_scan_layer(900, [(-500.0, 0.0, 300.0, 792.0)], w, h)  # mostly off the page: 49%
+    assert _is_scan_layer(1.0, strips, w, h)  # tiled into strips
+    assert _is_scan_layer(0.95, [(10.0, 20.0, 600.0, 700.0)], w, h)  # cropped a little
+    assert not _is_scan_layer(0.0, [(0.0, 0.0, w, h)], w, h)  # visible text over a full-bleed photo
+    assert not _is_scan_layer(1.0, [(72.0, 72.0, 540.0, 300.0)], w, h)  # invisible text, small picture
+    assert not _is_scan_layer(1.0, [(-500.0, 0.0, 300.0, 792.0)], w, h)  # mostly off the page: 49%
+    # An image and its soft-mask copy in the same place count once.
+    half = (0.0, 0.0, w, h * 0.45)
+    assert _image_union([half, half], w, h) == pytest.approx(w * h * 0.45)
+    assert not _is_scan_layer(1.0, [half, half], w, h)
+    # Two large photos on a born-digital page stay figures; a scan's strips go.
+    photos = [{"x0": 18.0, "top": 92.0, "x1": 594.0, "bot": 422.0}, {"x0": 18.0, "top": 442.0, "x1": 594.0, "bot": 772.0}]
+    assert _drop_scan_backgrounds(photos, 340, w, h, scan_layer=False) == photos
+    tiles = [{"x0": b[0], "top": b[1], "x1": b[2], "bot": b[3]} for b in strips]
+    assert _drop_scan_backgrounds(tiles, 900, w, h, scan_layer=True) == []
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_born_digital_photos_stay_figures(lib, tmp_path, engine, monkeypatch):
+    """Two big photographs (about 40% of the page each) with visible text: not a scan, so
+    both are figures and the text is read normally."""
+    paths, db = lib
+    pdf = tmp_path / "photos.pdf"
+    text = pdfgen.make_photo_page(pdf)
+    bid = convert(paths, db, pdf, engine, monkeypatch)
+    out = blocks(db, bid)
+    assert len([b for b in out if b["type"] == "figure"]) == 2
+    joined = norm(" ".join(b["text"] for b in out))
+    assert norm(" ".join(text)) in joined
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_two_columns_over_a_background_photo(lib, tmp_path, engine, monkeypatch):
+    """A designed page with a full-bleed photo behind justified two-column text and a narrow
+    gutter: still read column by column (the photo doesn't make it a scan)."""
+    paths, db = lib
+    pdf = tmp_path / "bg.pdf"
+    left, right = pdfgen.make_two_column_over_background(pdf)
+    bid = convert(paths, db, pdf, engine, monkeypatch)
+    out = blocks(db, bid)
+    texts = [norm(b["text"]) for b in out if b["type"] == "paragraph"]
+    expected = [norm(p) for p in left + right]
+    assert [t for t in texts if t in expected] == expected
 
 
 @pytest.mark.parametrize("strips", [1, 3])

@@ -635,7 +635,9 @@ def _extract_page_pdfium(src: Source, index: int, assets_dir: Path, ocr=None) ->
     finally:
         page.close()
     page_area = w * h
-    scan_layer = _is_scan_layer(sum(1 for c in chars if (c.get("text") or "").strip()), image_boxes, w, h)
+    real = [c for c in chars if (c.get("text") or "").strip() and not c.get("generated")]
+    invisible = sum(1 for c in real if c.get("invisible")) / len(real) if real else 0.0
+    scan_layer = _is_scan_layer(invisible, image_boxes, w, h)
     counts: Counter = Counter()
     lines = lines_from_chars(chars, counts, scan_layer)
     graphics = path_boxes + image_boxes
@@ -653,7 +655,7 @@ def _extract_page_pdfium(src: Source, index: int, assets_dir: Path, ocr=None) ->
     images = _merge_overlapping(images)
     n_chars = sum(len(ln["t"]) for ln in lines)
     scanned = n_chars < 20 and covered > page_area * 0.5
-    images = _drop_scan_backgrounds(images, n_chars, page_area)
+    images = _drop_scan_backgrounds(images, n_chars, w, h, scan_layer)
     tables = []
     if not scanned and n_paths >= 6:
         tables = _find_tables(src.plumber, index)
@@ -665,17 +667,44 @@ def _extract_page_pdfium(src: Source, index: int, assets_dir: Path, ocr=None) ->
     return _finish_page(result, images, src.pdfium, index, assets_dir, ocr, w, h)
 
 
-def _is_scan_layer(n_chars: int, image_boxes: list, w: float, h: float) -> bool:
-    """A scanned page with its own OCR text layer: text over images that, together, cover
-    most of the page. Scanners may tile a page into strips or crop it a little, and a
-    sparse page (a title, a plate) carries only a few words, so neither one page-sized
-    image nor a minimum amount of text is required."""
-    if n_chars == 0:
-        return False
-    covered = 0.0
-    for x0, top, x1, bot in image_boxes:
-        covered += max(min(x1, w) - max(x0, 0.0), 0.0) * max(min(bot, h) - max(top, 0.0), 0.0)
-    return covered >= 0.7 * w * h
+def _is_scan_layer(invisible: float, image_boxes: list, w: float, h: float) -> bool:
+    """A scanned page with its own OCR text layer. Scanners lay the OCR text over the page
+    image as invisible text (render mode 3); `invisible` is the share of the page's
+    characters drawn that way. Most of the text must be invisible, over images that cover
+    at least half the page together (the scan may be tiled into strips or cropped).
+
+    A born-digital page draws its text visibly, so a full-bleed background photo or two
+    big pictures never make it a scan, and it gets the normal passes."""
+    return invisible >= 0.5 and _image_union(image_boxes, w, h) >= 0.5 * w * h
+
+
+def _image_union(boxes: list, w: float, h: float) -> float:
+    """Area of the union of image boxes clipped to the page: overlapping layers (a mask over
+    its image, stacked tiles) count once."""
+    clipped = [(max(b[0], 0.0), max(b[1], 0.0), min(b[2], w), min(b[3], h)) for b in boxes]
+    clipped = sorted((b for b in clipped if b[2] > b[0] and b[3] > b[1]), key=_area, reverse=True)[:200]
+    xs = sorted({x for b in clipped for x in (b[0], b[2])})
+    total = 0.0
+    for xa, xb in zip(xs, xs[1:], strict=False):
+        spans = sorted((b[1], b[3]) for b in clipped if b[0] <= xa and b[2] >= xb)
+        covered, end = 0.0, -1.0
+        for top, bot in spans:
+            if top > end:
+                covered += bot - top
+                end = bot
+            elif bot > end:
+                covered += bot - end
+                end = bot
+        total += covered * (xb - xa)
+    return total
+
+
+def _scan_strips(images: list[dict], w: float, h: float) -> list[dict]:
+    """The images that tile a scanned page: each spans (nearly) the full width or height of
+    the page, and together they cover most of it."""
+    strips = [im for im in images if im["x1"] - im["x0"] >= 0.9 * w or im["bot"] - im["top"] >= 0.9 * h]
+    boxes = [(im["x0"], im["top"], im["x1"], im["bot"]) for im in strips]
+    return strips if strips and _image_union(boxes, w, h) >= 0.7 * w * h else []
 
 
 def _note_passes(result: dict, counts: Counter, scan_layer: bool) -> None:
@@ -685,17 +714,20 @@ def _note_passes(result: dict, counts: Counter, scan_layer: bool) -> None:
         result["scan_layer"] = True
 
 
-def _drop_scan_backgrounds(images: list[dict], n_chars: int, page_area: float) -> list[dict]:
+def _drop_scan_backgrounds(images: list[dict], n_chars: int, w: float, h: float,
+                           scan_layer: bool = False) -> list[dict]:
     """A scanned page with an OCR text layer is a page-sized image under invisible text.
 
-    The text is the content; the image is not a figure. Some scans store the page as a few
-    strips; together they cover the page, and none of them is a figure either. (A sparse
-    page, such as a plate with a caption, keeps its image.)"""
+    The text is the content; the image is not a figure. On a scan (invisible text), a page
+    stored as strips that tile it is the same image in pieces, so the strips go too. A born-
+    digital page only loses a single image covering 70%+ of it, as before, so its pictures
+    stay figures. (A sparse page, such as a plate with a caption, keeps its image.)"""
     if n_chars < 200:
         return images
-    if sum((im["x1"] - im["x0"]) * (im["bot"] - im["top"]) for im in images) >= page_area * 0.7:
-        return [im for im in images if (im["x1"] - im["x0"]) * (im["bot"] - im["top"]) < page_area * 0.1]
-    return [im for im in images if (im["x1"] - im["x0"]) * (im["bot"] - im["top"]) < page_area * 0.7]
+    page_area = w * h
+    strips = {id(im) for im in _scan_strips(images, w, h)} if scan_layer else set()
+    return [im for im in images
+            if id(im) not in strips and (im["x1"] - im["x0"]) * (im["bot"] - im["top"]) < page_area * 0.7]
 
 
 def _merge_overlapping(images: list[dict]) -> list[dict]:
@@ -1174,7 +1206,16 @@ def _extract_page_plumber(plumber_pdf, pdfium_doc, index: int, assets_dir: Path,
         page_area = w * h
         image_boxes = [(float(im["x0"]) - x_off, float(im["top"]) - y_off, float(im["x1"]) - x_off,
                         float(im["bottom"]) - y_off) for im in page.images]
-        scan_layer = _is_scan_layer(sum(1 for c in chars if (c.get("text") or "").strip()), image_boxes, w, h)
+        # pdfplumber doesn't report text render modes; PDFium reads the same page for that.
+        scan_layer = False
+        if chars and _image_union(image_boxes, w, h) >= 0.5 * page_area:
+            from .pdfium_chars import invisible_share
+
+            pdf_page = pdfium_doc[index]
+            try:
+                scan_layer = _is_scan_layer(invisible_share(pdf_page), image_boxes, w, h)
+            finally:
+                pdf_page.close()
         counts: Counter = Counter()
         lines = lines_from_chars(chars, counts, scan_layer)
 
@@ -1193,7 +1234,7 @@ def _extract_page_plumber(plumber_pdf, pdfium_doc, index: int, assets_dir: Path,
 
         n_chars = sum(len(ln["t"]) for ln in lines)
         scanned = n_chars < 20 and covered > page_area * 0.5
-        images = _drop_scan_backgrounds(images, n_chars, page_area)
+        images = _drop_scan_backgrounds(images, n_chars, w, h, scan_layer)
 
         tables = []
         if not scanned and len(page.lines) + len(page.rects) >= 6:

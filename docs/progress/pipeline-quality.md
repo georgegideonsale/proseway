@@ -169,13 +169,32 @@ flow again, as on main, instead of figure images. A whole-book diff of figure de
 against `c686c1e` shows only those three pages changed: Intro Stats `figure_text` went
 from 54 words to 11, the labels of p34's dice chart. Self-Instruct keeps all 10 figures.
 
-**5. Scan text layers.** A page whose images together cover 70%+ of it (clipped to the
-page), with any text at all, is a scan with its own OCR layer (`_is_scan_layer`; page
-JSON `scan_layer: true`). Since the second review, total coverage counts, so a scan tiled
-into strips or cropped a little qualifies, and so does a sparse title page or plate. The
-first version needed one image over 70% and 200+ characters. On a text-bearing scan page
-(200+ characters), the strips are also dropped as the scan background, as a single page
-image already was. On those pages extraction skips three things:
+**5. Scan text layers.** A scan with its own OCR layer is detected by the scanner's own
+signal (`_is_scan_layer`; page JSON `scan_layer: true`). Two things must hold:
+- at least half of the page's characters are *invisible text* (render mode 3, read with
+  `FPDFTextObj_GetTextRenderMode`);
+- the page's images together cover at least half of it, measured as the union of their
+  boxes clipped to the page, so a mask over its image or stacked tiles count once.
+
+Born-digital pages draw their text visibly, so they never qualify, whatever images sit
+behind or beside the text. Gibbon's layer is mode 3 on every text page; OpenStax and
+*Pride and Prejudice* are mode 0.
+- **History:**
+  - The first version needed one image covering 70%+ and 200+ characters.
+  - The second used summed coverage and any text. The third review showed that this made
+    two big photographs on a born-digital page "scan strips" and deleted them, and that a
+    full-bleed background photo turned off the column passes.
+  - Page 6 of both OpenStax books (a large picture plus 52 words) was in fact flagged as a
+    scan under both earlier rules. It now isn't, and its picture is still a figure.
+- **Background images.** A single image covering 70%+ of a page with 200+ characters is
+  dropped as the background on every page, as on main.
+- **Strips.** Only on a scan-layer page are the strips that tile it dropped too
+  (`_scan_strips`). Each strip must span ~90% of the page's width or height, and their
+  union must cover 70%+.
+- **The plumber engine** asks PDFium for the page's render modes (`invisible_share`), and
+  only when images cover half the page.
+
+On scan-layer pages extraction skips three things:
 - the gutter finder;
 - untangling of overlapping runs;
 - shadow-line dropping.
@@ -186,9 +205,19 @@ overprint de-duplication still runs with its new guards. Tests:
 - `test_scan_text_layer_is_read_as_plain_text` runs on both engines, with the page image
   whole and tiled into 3 strips. Its contents list is aligned in three columns and is not a
   table, and neither the image nor the strips become figures.
-- `test_scan_layer_detection` covers strips, a cropped scan, a sparse page, no text, an
-  ordinary figure, and an image mostly off the page.
-- The strip cases fail on `93543c4`.
+- `test_scan_layer_detection` covers these cases:
+  - strips;
+  - a cropped scan;
+  - visible text over a full-bleed photo;
+  - invisible text over a small picture;
+  - an image mostly off the page;
+  - an image plus its mask copy;
+  - two 39% photos kept on a born-digital page, while a scan's strips are dropped.
+- `test_born_digital_photos_stay_figures` (both engines): two photos of 39% each plus 340
+  characters of visible text give two figures.
+- `test_two_columns_over_a_background_photo` (both engines): justified two-column text with
+  a 12 pt gutter over a full-bleed photo reads column by column.
+- The strip cases fail on `93543c4`. The two born-digital tests fail on `d1c95b6`.
 
 **6. `FakeOcr`.** Ported from the duplicate branch (`tests/pdfgen.py`: `fake_ocr_lines`,
 `FakeOcr`, `make_image_scan`). `test_ocr_pages_lose_watermarks_and_noisy_headings` runs on
@@ -285,6 +314,11 @@ and diffed the two block lists.
     "UNIVEI S", "UNIVERSY 5S". That is 11 blocks on main and 7 here.
   - The only other block that differs is the p564 paragraph above (same block, fewer
     doubled letters).
+- **After the third review** (scan layers by invisible text), Gibbon and University
+  Physics were run again. They are identical to the run before on every metric and on
+  their word, block and counter counts. Gibbon's page paths are unchanged too: 642
+  scan-layer, 12 OCR, none on neither. (Times: Gibbon 89.7 s, Physics 359.3 s; the extra
+  render-mode lookup is within this machine's noise.)
 - **The narrower overprint guard elsewhere.** Sleepy Hollow, Self-Instruct, *Pride and
   Prejudice* and Intro Stats were re-run after the change. Their word and block counts,
   metrics and counters are identical to the previous run (for example
@@ -441,7 +475,9 @@ both.
 | `test_title_in_an_ornament_stays_text` | n/a (unit) | Review pass. An 18 pt title inside a 42-shape ornament stays in the flow. |
 | `test_framed_note_and_caption_lines_stay_in_the_flow` | n/a (unit) | Review pass. A framed note in 7 pt sentences and a caption's second line stay in the flow, while the diagram beside them is still a figure with its labels. |
 | `test_scan_text_layer_is_read_as_plain_text` | both × (1 image, 3 strips) | Review pass. A scan with an invisible OCR layer: its contents list (aligned in three columns) is not a table, the page image or strips are not figures, every word comes through, and no shadow lines or text tables are counted. |
-| `test_scan_layer_detection` | n/a (unit) | Second review. Total image coverage decides: strips, a cropped scan and a sparse page qualify; no text, an ordinary figure, or an image mostly off the page don't. |
+| `test_scan_layer_detection` | n/a (unit) | Third review. Invisible text over images covering half the page (union) is a scan; visible text never is. Strips go only on a scan; a born-digital page's two big photos stay. |
+| `test_born_digital_photos_stay_figures` | both | Third review. Two 39% photos plus visible text: two figures, text intact. |
+| `test_two_columns_over_a_background_photo` | both | Third review. Narrow-gutter justified columns over a full-bleed photo read column by column. |
 | `test_ocr_pages_lose_watermarks_and_noisy_headings` | both | Review pass, ported `FakeOcr`. Exact paragraphs and pages; one heading; no running head and no stamp reading. |
 | `test_ocr_scan_with_real_engine` | pdfium + RapidOCR | Renamed from `test_ocr_scan_end_to_end`; skipped without the add-on. |
 
@@ -454,7 +490,8 @@ running them with `PYTHONPATH` pointing at an archive of that commit.
 - a shaded, outlined sidebar of body-size prose stays a paragraph;
 - the caption follows its figure and is linked to it, and FTS search finds a label.
 
-`uv run pytest`: 66 passed (56 before the review pass, 63 after the first review).
+`uv run pytest`: 70 passed (56 before the review pass, 63 after the first review, 66
+after the second).
 `uv run ruff check .`: clean.
 
 ## What didn't improve, and what's left
@@ -491,6 +528,9 @@ running them with `PYTHONPATH` pointing at an archive of that commit.
   - **The stamp rule for 1–3-page scans.** `min(3, pages // 4 + 1)` means one clear stamp
     reading establishes the stamp on a scan of under 4 pages. After that, looser matches
     near its position go too.
+  - **Scans whose OCR text is visible** (drawn under the page image rather than invisible)
+    aren't recognised as scans. They go through the normal passes, like born-digital
+    pages. No test book has one.
   - **A weak test.** `test_ocr_scan_with_real_engine` checks headings with `all(...)`,
     which also passes when there are no headings at all.
 - **Vector-drawn maths beside body text** (OpenStax Physics answer keys and worked
