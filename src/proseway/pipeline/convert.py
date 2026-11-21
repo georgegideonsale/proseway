@@ -54,9 +54,8 @@ def run_conversion(db_path: str, data_root: str, book_id: str, skip_pages: list[
     try:
         _update(db, book_id, status="converting", error=None)
         meta = extract.read_metadata(pdf_path)
-        plumber = extract.open_pdfplumber(pdf_path)
-        pdfium_doc = extract.open_pdfium(pdf_path)
-        n_pages = len(plumber.pages)
+        src = extract.Source(pdf_path)
+        n_pages = len(src)
         with db.connect() as c:
             row = c.execute("SELECT title, author FROM books WHERE id=?", (book_id,)).fetchone()
         updates = {"page_count": n_pages}
@@ -79,27 +78,26 @@ def run_conversion(db_path: str, data_root: str, book_id: str, skip_pages: list[
                         data = {"n": i + 1, "w": 612, "h": 792, "lines": [], "images": [], "tables": [],
                                 "scanned": False, "ocr": False, "failed": True}
                     else:
-                        data = extract.extract_page(plumber, pdfium_doc, i, assets_dir, ocr=ocr_engine)
+                        data = extract.extract_page(src, i, assets_dir, ocr=ocr_engine)
                         if data.get("scanned") and not data.get("ocr") and ocr_engine is None and ocr_mod.available():
                             ocr_engine = ocr_mod.get_engine()
                             if ocr_engine is not None:
-                                data = extract.extract_page(plumber, pdfium_doc, i, assets_dir, ocr=ocr_engine)
+                                data = extract.extract_page(src, i, assets_dir, ocr=ocr_engine)
                     _write_json_atomic(out, data)
                 if i % 4 == 0 or i == n_pages - 1:
                     if _status(db, book_id) == "cancelled":
                         raise Cancelled()
                     _update(db, book_id, pages_done=i + 1)
             log.info("extracted %d pages in %.1fs", n_pages, time.monotonic() - started)
-        finally:
-            plumber.close()
 
-        pages = []
-        for i in range(n_pages):
-            pages.append(json.loads((pages_dir / f"{i + 1:05d}.json").read_text(encoding="utf-8")))
-        result = layout.assemble(pages, meta.get("outline"))
-        rows = [layout.block_to_row(b) for b in result["blocks"]]
-        _render_equations(pdfium_doc, rows, pages, assets_dir)
-        pdfium_doc.close()
+            pages = []
+            for i in range(n_pages):
+                pages.append(json.loads((pages_dir / f"{i + 1:05d}.json").read_text(encoding="utf-8")))
+            result = layout.assemble(pages, meta.get("outline"))
+            rows = [layout.block_to_row(b) for b in result["blocks"]]
+            _render_equations(src.pdfium, rows, pages, assets_dir)
+        finally:
+            src.close()
 
         _store(db, book_id, rows, result)
         _update(db, book_id, status="ready", pipeline_version=PIPELINE_VERSION, pages_done=n_pages,

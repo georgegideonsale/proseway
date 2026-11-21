@@ -220,8 +220,12 @@ def _build_line(chars: list[dict]) -> dict | None:
     prev = None
     n_bold = n_italic = n_mono = n_math = 0
 
+    last_visible = 0
+
     def close_style(at: int) -> None:
         nonlocal cur_style
+        # A style run ends at its last visible character, never on a trailing space.
+        at = min(at, last_visible) if last_visible > style_start else at
         if cur_style is not None and at > style_start:
             spans.append([style_start, at, cur_style])
         cur_style = None
@@ -255,6 +259,7 @@ def _build_line(chars: list[dict]) -> dict | None:
         t = t.replace("­", "") if not t == "­" else t
         text_parts.append(t)
         length += len(t)
+        last_visible = length
         prev = ch
     close_style(length)
 
@@ -353,7 +358,149 @@ def render_cover(path: Path, out: Path, width: int = 480) -> bool:
         doc.close()
 
 
-def extract_page(plumber_pdf, pdfium_doc, index: int, assets_dir: Path, ocr=None) -> dict:
+class Source:
+    """An open PDF. PDFium is always open; pdfplumber is opened only when needed."""
+
+    def __init__(self, path: Path, engine: str | None = None):
+        import os
+
+        self.path = path
+        self.engine = (engine or os.environ.get("PROSEWAY_ENGINE") or "pdfium").lower()
+        self.pdfium = open_pdfium(path)
+        self._plumber = None
+        if self.engine == "plumber":
+            self._plumber = open_pdfplumber(path)
+        else:
+            check_pdf_header(path)
+            _check_permissions(self.pdfium)
+
+    @property
+    def plumber(self):
+        if self._plumber is None:
+            self._plumber = open_pdfplumber(self.path)
+        return self._plumber
+
+    def __len__(self) -> int:
+        return len(self.pdfium)
+
+    def close(self) -> None:
+        if self._plumber is not None:
+            self._plumber.close()
+        self.pdfium.close()
+
+
+def _check_permissions(pdfium_doc) -> None:
+    """Refuse PDFs whose author disabled text extraction (bit 5 of the permission flags)."""
+    import pypdfium2.raw as raw
+
+    try:
+        if raw.FPDF_GetSecurityHandlerRevision(pdfium_doc.raw) == -1:
+            return  # not encrypted
+        perms = raw.FPDF_GetDocPermissions(pdfium_doc.raw) & 0xFFFFFFFF
+    except Exception:
+        return
+    if not perms & (1 << 4):
+        raise errors.extraction_forbidden()
+
+
+def extract_page(src: Source, index: int, assets_dir: Path, ocr=None) -> dict:
+    if src.engine == "plumber":
+        return _extract_page_plumber(src.plumber, src.pdfium, index, assets_dir, ocr)
+    return _extract_page_pdfium(src, index, assets_dir, ocr)
+
+
+def _finish_page(result: dict, images: list[dict], pdfium_doc, index: int, assets_dir: Path,
+                 ocr, w: float, h: float) -> dict:
+    if result["scanned"]:
+        if ocr is not None:
+            try:
+                result["lines"] = ocr.page_lines(pdfium_doc, index, w, h)
+                result["ocr"] = True
+                images = []
+            except Exception as exc:
+                log.warning("OCR failed on page %s: %s", index + 1, exc)
+        if not result["ocr"]:
+            images = [{"x0": 0.0, "x1": w, "top": 0.0, "bot": h, "scan": True}]
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    for k, im in enumerate(images):
+        name = f"p{index + 1:05d}-img{k}.jpg"
+        if _render_crop(pdfium_doc, index, (im["x0"], im["top"], im["x1"], im["bot"]), w, h, assets_dir / name):
+            entry = {key: round(v, 2) if isinstance(v, float) else v for key, v in im.items() if key != "i"}
+            entry["file"] = name
+            result["images"].append(entry)
+    return result
+
+
+def _extract_page_pdfium(src: Source, index: int, assets_dir: Path, ocr=None) -> dict:
+    from .pdfium_chars import page_chars, page_objects
+
+    page = src.pdfium[index]
+    try:
+        chars, w, h = page_chars(page)
+        n_paths, image_boxes = page_objects(page)
+    finally:
+        page.close()
+    lines = lines_from_chars(chars)
+    page_area = w * h
+    covered = 0.0
+    images = []
+    for x0, top, x1, bot in image_boxes:
+        x0, x1, top, bot = max(0.0, x0), min(w, x1), max(0.0, top), min(h, bot)
+        iw, ih = x1 - x0, bot - top
+        if iw <= 0 or ih <= 0:
+            continue
+        covered += min(iw * ih, page_area)
+        if iw * ih < page_area * MIN_FIGURE_AREA_RATIO or min(iw, ih) < MIN_FIGURE_SIDE:
+            continue
+        images.append({"x0": x0, "x1": x1, "top": top, "bot": bot})
+    images = _merge_overlapping(images)
+    n_chars = sum(len(ln["t"]) for ln in lines)
+    scanned = n_chars < 20 and covered > page_area * 0.5
+    tables = []
+    if not scanned and n_paths >= 6:
+        tables = _find_tables(src.plumber, index)
+    result: dict[str, Any] = {"n": index + 1, "w": round(w, 2), "h": round(h, 2), "lines": lines,
+                              "images": [], "tables": tables, "scanned": scanned, "ocr": False}
+    return _finish_page(result, images, src.pdfium, index, assets_dir, ocr, w, h)
+
+
+def _merge_overlapping(images: list[dict]) -> list[dict]:
+    """Figures are often drawn as several image tiles; merge tiles that touch."""
+    merged: list[dict] = []
+    for im in sorted(images, key=lambda i: (i["top"], i["x0"])):
+        for m in merged:
+            if im["x0"] <= m["x1"] + 2 and im["x1"] >= m["x0"] - 2 and im["top"] <= m["bot"] + 2 and im["bot"] >= m["top"] - 2:
+                m.update(x0=min(m["x0"], im["x0"]), x1=max(m["x1"], im["x1"]),
+                         top=min(m["top"], im["top"]), bot=max(m["bot"], im["bot"]))
+                break
+        else:
+            merged.append(dict(im))
+    return merged
+
+
+def _find_tables(plumber_pdf, index: int) -> list[dict]:
+    page = plumber_pdf.pages[index]
+    out = []
+    try:
+        x_off, y_off = float(page.bbox[0]), float(page.bbox[1])
+        if len(page.lines) + len(page.rects) < 6:
+            return out
+        for t in page.find_tables():
+            rows = [[(cell or "").strip() for cell in r] for r in t.extract() if r]
+            if len(rows) >= 2 and max(len(r) for r in rows) >= 2 and sum(1 for r in rows for c in r if c) >= 4:
+                bx0, btop, bx1, bbot = t.bbox
+                out.append({"bbox": [bx0 - x_off, btop - y_off, bx1 - x_off, bbot - y_off], "rows": rows})
+    except Exception as exc:
+        log.debug("table detection failed on page %s: %s", index + 1, exc)
+    finally:
+        try:
+            page.close()
+        except Exception:  # noqa: S110
+            pass
+    return out
+
+
+def _extract_page_plumber(plumber_pdf, pdfium_doc, index: int, assets_dir: Path, ocr=None) -> dict:
     """Extract one page (0-based index) into a JSON-able dict."""
     page = plumber_pdf.pages[index]
     try:
@@ -415,29 +562,7 @@ def extract_page(plumber_pdf, pdfium_doc, index: int, assets_dir: Path, ocr=None
             "scanned": scanned,
             "ocr": False,
         }
-
-        if scanned:
-            if ocr is not None:
-                try:
-                    result["lines"] = ocr.page_lines(pdfium_doc, index, w, h)
-                    result["ocr"] = True
-                    images = []
-                except Exception as exc:
-                    log.warning("OCR failed on page %s: %s", index + 1, exc)
-            if not result["ocr"]:
-                # Keep the page visible as an image so nothing is silently lost.
-                images = [{"x0": 0.0, "x1": w, "top": 0.0, "bot": h, "i": 0, "scan": True}]
-
-        assets_dir.mkdir(parents=True, exist_ok=True)
-        for k, im in enumerate(images):
-            name = f"p{index + 1:05d}-img{k}.jpg"
-            if _render_crop(pdfium_doc, index, (im["x0"], im["top"], im["x1"], im["bot"]), w, h,
-                            assets_dir / name):
-                entry = {key: round(v, 2) if isinstance(v, float) else v
-                         for key, v in im.items() if key != "i"}
-                entry["file"] = name
-                result["images"].append(entry)
-        return result
+        return _finish_page(result, _merge_overlapping(images), pdfium_doc, index, assets_dir, ocr, w, h)
     finally:
         try:
             page.close()
