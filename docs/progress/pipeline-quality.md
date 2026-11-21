@@ -93,6 +93,163 @@ reading flow (labels inside a figure) is kept on the figure block and is searcha
   drawn at another point in the content stream, and a unit test covers it. After the fix,
   extraction of those 120 pages is line-for-line identical to the old code.
 
+## Review pass (merge gates)
+
+A coordinator review asked for a second pass before merging. Status of each item: **Working**
+means there is a test for it and the benchmark was checked; **Untested** means it isn't
+covered by either.
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Benchmark Gibbon and University Physics 1 against main | Working (see the tables below) |
+| 2 | Tighter guards and counters on the passes that delete words | Working |
+| 3 | Body-size text in a drawing and framed prose stay in the flow | Working |
+| 4 | Empty exercise tables and boxed formulas stay text | Working |
+| 5 | A scan's own OCR text layer skips the grid passes | Working |
+| 6 | Deterministic `FakeOcr` fixture | Working |
+| 7 | `PIPELINE_VERSION` 1 → 2 | Working |
+
+**2. Passes that delete words.** Both de-duplication passes now count what they drop, in
+`stats.removed` as `overprint_glyphs` and `shadow_lines`. Each page's JSON carries a
+`dropped` count, and `assemble` sums them.
+- `_dedupe_overprint` only drops a glyph that has the same text, the same size (within
+  10%) and the same width as the first copy, within 1 pt of it.
+- `_drop_shadow_lines` only drops a line when all of these hold:
+  - it is within 20% of the other line's size;
+  - its top is within 0.6 of a line height of the other's;
+  - it starts within 2.5 em of where its text sits inside the other line (found with
+    `fuzz.partial_ratio_alignment`).
+- The 20% and the offsets come from Self-Instruct's Figure 6. Its legend is drawn as a
+  pseudo-3D stack of about six copies at 8.5–10 pt, up to 6 pt apart vertically and 21 pt
+  sideways. A 10% limit kept those copies, and the extra full-size lines made the chart
+  fail the figure test.
+- The position check is the one that protects real text. A short line is only dropped if
+  it lies on top of the same words in the other line.
+- The previous code dropped a standalone "Ibid." (11 pt) overlapping a 6 pt footnote line
+  that begins "Ibid. vol. i. …", in both passes. Verified by running the new test against
+  commit `c686c1e`.
+
+**3. Text the figure finder must leave alone** (ported from the duplicate branch, then
+adjusted against the corpus):
+- **Body-size text in a vector drawing is not figure text** (`body_size_text`). If the
+  median size of the text in a drawing is over 0.85× the body size, the drawing is a frame
+  (a title-page ornament, a boxed formula, an exercise grid), so its text stays in the flow
+  and no picture is added. Two kinds of chart are exceptions:
+  - a dense drawing: 100+ shapes, 3+ per line, 5+ lines. This keeps Self-Instruct's
+    sunburst, whose labels are 10.5 pt on an 11 pt body;
+  - a chart whose labels are mostly numbers (40%+ of lines) and sit outside its shapes.
+    Intro Stats p34's dice bar chart has 9.5 pt tick labels on a 9.5 pt body. An exercise
+    grid puts its labels inside the drawn cells (`_in_cells`), so it is not an exception.
+  - Text over 1.05× body size (a title) is never a label.
+- **Framed prose** (`prose_in_frame`). Text counts as prose, at any size, when either holds:
+  - 80%+ of its non-code characters are in lines of 6+ words;
+  - 50%+ are, and the drawing is a plain frame of ≤ 12 shapes.
+
+  The duplicate branch used the 50% rule with no shape limit. Here, that rejected
+  Self-Instruct's Figures 2 and 6: both are all small type, and about 55% of their
+  characters are in sentence-length example lines inside the diagram.
+- **Caption continuations** (`_caption_continuations`) never join a drawing as labels. A
+  continuation is a line right under a caption (or under the caption's previous line), at
+  the same size, starting near its left edge. A blanket "6+ words is never a label" rule
+  also pushed Self-Instruct's axis title "ROUGE-L Overlap with the Most Similar Seed
+  Instruction" out of its chart, so that rule was dropped.
+
+**4. Exercise tables and boxed formulas.** The body-size rule covers these. Intro Stats
+p227 and p664, the empty "Smoking Level" tables, are 14–16 lines of 10 pt text inside
+shaded cells, and p254's P(x) box is 3 lines in a 7-shape frame. All three are text in the
+flow again, as on main, instead of figure images. A whole-book diff of figure decisions
+against `c686c1e` shows only those three pages changed: Intro Stats `figure_text` went
+from 54 words to 11, the labels of p34's dice chart. Self-Instruct keeps all 10 figures.
+
+**5. Scan text layers.** A page with 200+ characters over an image covering 70%+ of it is
+a scan with its own OCR layer (`_is_scan_layer`; page JSON `scan_layer: true`). On those
+pages extraction skips three things:
+- the gutter finder;
+- untangling of overlapping runs;
+- shadow-line dropping.
+
+Layout also skips text-table detection there, as it already did on pages we OCR ourselves.
+Main had none of these passes, so such pages now behave exactly as on main, except that
+overprint de-duplication still runs with its new guards. Covered by
+`test_scan_text_layer_is_read_as_plain_text` (both engines): its contents list is aligned
+in three columns and is not a table.
+
+**6. `FakeOcr`.** Ported from the duplicate branch (`tests/pdfgen.py`: `fake_ocr_lines`,
+`FakeOcr`, `make_image_scan`). `test_ocr_pages_lose_watermarks_and_noisy_headings` runs on
+both engines, without the OCR add-on. It checks:
+- the exact paragraphs, in order, with their page numbers;
+- the only heading is "A PLAY IN ONE ACT";
+- no running head and no stamp reading survives.
+
+It found two real gaps, both now fixed:
+- **Running heads.** An OCR running head guessed at 1.4× body size escaped
+  running-element removal, which skips anything over 1.3×. OCR lines now get 1.6×, as on
+  the duplicate branch.
+- **Short scans.** A 4-page scan with only two clear stamp readings never established the
+  stamp, so the looser misreadings stayed. A short scan now needs `min(3, pages // 4 + 1)`
+  clear readings, which is unchanged for 8+ pages.
+
+The real-engine test is renamed `test_ocr_scan_with_real_engine` and is still skipped
+without RapidOCR.
+
+**7.** `PIPELINE_VERSION` is now 2, so books converted earlier are flagged as stale.
+
+### Benchmark after the review pass
+
+Every book was run on its own (`--only <book>`), one after another. Main's code was run
+from a `git archive` of `main` (2093049, whose pipeline is identical to `bff9f42`) via
+`PYTHONPATH`. Main's numbers for the six books are the `before` run above.
+
+| Book | Main: recall / order / ref sim | This branch: recall / order / ref sim | Blocks main → branch | Time main → branch |
+|---|---|---|---:|---:|
+| Gibbon vol. 1 (scan, own OCR layer) | 0.9616 / 0.7210 / 0.6455 | 0.9616 / 0.7210 / 0.6455 | 4,955 → 4,951 | 108.0 → 85.2 s |
+| University Physics 1 | 0.9682 / 0.9539 / – | **0.9693 / 0.9569** / – | 17,319 → 16,998 | 319.3 → 332.5 s |
+| *Pride and Prejudice* | 0.9506 / 0.9671 / 0.9683 | 0.9506 / 0.9671 / 0.9683 | 2,087 → 2,087 | 45.6 → 25.9 s |
+| *Sleepy Hollow* | 0.9456 / 0.9637 / 0.9748 | 0.9477 / 0.9634 / 0.9734 | 78 → 79 | 3.6 → 3.1 s |
+| *Self-Instruct* | 0.9401 / 0.6779 / 0.3679 | 0.9080¹ / **0.8635 / 0.5274** | 731 → 653 | 4.5 → 6.6 s |
+| *Erdős discrepancy* | 0.9369 / 0.8649 / 0.7501 | 0.9363² / 0.8644 / 0.7502 | 855 → 858 | 3.1 → 3.5 s |
+| *Introductory Statistics* | 0.9523 / 0.9667 / – | 0.9553 / 0.9693 / – | 17,961 → 18,242 | 106.1 → 103.6 s |
+| *Trifles* (OCR) | – / – / 0.1365 (precision 0.8521) | – / – / 0.1366 (precision **0.8585**) | 284 → 234 | 228.3 → 140.0 s |
+
+What the review-pass numbers show:
+- **Gibbon:**
+  - Every accuracy metric is identical to main: layer recall and order, and reference
+    similarity, recall (0.9038) and precision (0.8905). The word count is identical too
+    (272,366).
+  - `stats.removed` has no `text_tables` entry. Every one of its 652 pages took the
+    scan-layer or OCR path, so the gutter, untangle, shadow and text-table passes never ran
+    on it.
+  - Only `overprint_glyphs: 5` was dropped. There are 4 fewer blocks with exactly the same
+    words; I didn't trace which paragraphs regrouped.
+- **Physics:**
+  - Layer recall and order both rose.
+  - 55 text tables were found.
+  - 16 fewer figures than at `c686c1e`, all of them body-size text in a drawing that is
+    now text again: the constants tables on pp. 883–884, and answer-key and worked-example
+    fragments on pp. 907–943.
+  - Some of those regions also hold maths drawn as vector paths with no text layer. That
+    maths is not shown, as on main. `c686c1e` showed those regions as pictures, at the cost
+    of taking their words out of the reading flow.
+- **The other six books:** they match the earlier "after" run to within 0.0005. Trifles'
+  counters and word count are identical to it, so the 1.6× OCR running-head allowance
+  changes nothing on the real scan.
+- **Counters:**
+  - Self-Instruct: `overprint_glyphs: 73`, `shadow_lines: 21`.
+  - Sleepy Hollow: `overprint_glyphs: 45` (the fake-bold banner).
+  - Intro Stats: 3 overprinted glyphs and 3 shadow lines.
+  - Pride, Erdős and Physics: zero of both.
+- **Times** are as noisy as before. The main Gibbon and Physics runs overlapped with my test
+  runs; the branch runs had the machine to themselves.
+
+**Not benchmarked:** the pdfplumber engine (only the tests run it), and any book outside
+the eight above. The test corpus has nothing like a title page with a drawn ornament or a
+framed note in footnote type; those are covered only by the synthetic tests.
+
+**Nit, `pdfium_chars.MAX_GRAPHIC_OBJECTS`.** The object walk stops after 20,000 page
+objects, and an image after that point is no longer seen, so it can't become a figure.
+Main counted images with no cap. No test book reaches the cap; it bounds the work on
+hostile or extremely dense pages.
+
 ## Benchmark
 
 `uv run python scripts/benchmark.py --only self-instruct erdos pride sleepy intro-stats trifles`,
@@ -187,10 +344,10 @@ extraction diffed against the old code.
   - p415: the REMINDER note stays prose.
   - p882: the NOTE box stays prose.
   - p4: the ISBN block is a 2-column table.
-- **Deliberate trade-off:** p227 and p664 are *empty* exercise tables (headers and row
-  labels only, shaded cells). They become figure images with their labels as
-  `figure_text`. Before, they were 14 one-word paragraphs.
-- **Not ideal:** p254's small P(x) box becomes a figure.
+- **Changed in the review pass:** p227 and p664 are *empty* exercise tables (headers and
+  row labels only, shaded cells), and p254 has a small boxed P(x) formula. At `c686c1e`
+  they became figure images with their words only in `figure_text`. They are text in the
+  flow again, as on main: 14–16 short paragraphs each, without a picture of the grid.
 - **Fixed along the way:**
   - "Table 1.15 contains the total…" is a sentence, not a caption. It had been used to cut
     drawings.
@@ -231,6 +388,15 @@ both.
 | `test_text_tables_and_display_maths` | n/a (unit) | A grid of numbers in a "STIX"-named font is a table. Stacked limits and sums of a display equation are not. Neither is a three-column index. |
 | `test_ligature_letters_are_not_taken_for_overprint` | n/a (unit) | "officers" keeps both f's. A fake-bold copy drawn later is dropped. A label drawn three times as a shadow reads once. |
 | `test_scan_text_layer_is_not_figure_text` † | n/a (unit) | Short title lines over a page-sized scan image stay text. |
+| `test_dedupe_keeps_text_at_another_size` | n/a (unit) | Review pass. An 11 pt "Ibid." over a 6 pt footnote line that starts "Ibid." keeps both lines, through `lines_from_chars` and through `_drop_shadow_lines`. A same-size copy 1 pt off is still dropped and counted. |
+| `test_title_in_an_ornament_stays_text` | n/a (unit) | Review pass. An 18 pt title inside a 42-shape ornament stays in the flow. |
+| `test_framed_note_and_caption_lines_stay_in_the_flow` | n/a (unit) | Review pass. A framed note in 7 pt sentences and a caption's second line stay in the flow, while the diagram beside them is still a figure with its labels. |
+| `test_scan_text_layer_is_read_as_plain_text` | both | Review pass. A page-sized scan with an invisible OCR layer: its contents list (aligned in three columns) is not a table, every word comes through, and no shadow lines or text tables are counted. |
+| `test_ocr_pages_lose_watermarks_and_noisy_headings` | both | Review pass, ported `FakeOcr`. Exact paragraphs and pages; one heading; no running head and no stamp reading. |
+| `test_ocr_scan_with_real_engine` | pdfium + RapidOCR | Renamed from `test_ocr_scan_end_to_end`; skipped without the add-on. |
+
+Every review-pass test except the real-engine one fails on `c686c1e`. That was checked by
+running them with `PYTHONPATH` pointing at an archive of that commit.
 
 `test_text_inside_figures_belongs_to_the_figure` covers:
 - a vector diagram with 7 pt labels, two of them overlapping, gets every label in `figure_text`;
@@ -238,7 +404,7 @@ both.
 - a shaded, outlined sidebar of body-size prose stays a paragraph;
 - the caption follows its figure and is linked to it, and FTS search finds a label.
 
-`uv run pytest`: 56 passed. `uv run ruff check .`: clean.
+`uv run pytest`: 63 passed (56 before the review pass). `uv run ruff check .`: clean.
 
 ## What didn't improve, and what's left
 
@@ -260,6 +426,12 @@ both.
   branch; only the figure-trimming use was fixed.
 - **OCR quality itself** is unchanged: small caps are misread and text is noisy. Upside-down
   stamps such as "'pisus sy uo sem I" still appear on a few Trifles pages.
-- **The table detector is off on OCR pages**, where boxes are too uneven to read as a grid.
+- **The table detector is off on OCR pages**, both ours and scans with their own OCR
+  layer, where boxes are too uneven to read as a grid. Tables in Gibbon's scan come out as
+  lines of text, as on main.
+- **Vector-drawn maths beside body text** (OpenStax Physics answer keys and worked
+  examples) is not shown. The surrounding words are in the flow, but maths drawn as paths
+  with no text layer has no picture, as on main. A fix would crop just the path clusters
+  that have no text over them.
 - **pdfplumber engine:** the new tests pass on both engines. The benchmark was run on PDFium
   only, the default.

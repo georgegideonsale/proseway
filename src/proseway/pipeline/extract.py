@@ -350,14 +350,17 @@ def _dedupe_overprint(chars: list[dict]) -> list[dict]:
 
     PDFium splits ligatures into their letters with one shared box: the "ff" of "officers"
     is two "f"s drawn one right after the other at the same spot. Those are real letters, so
-    only a copy drawn at some other point in the content stream counts as a duplicate."""
+    only a copy drawn at some other point in the content stream counts as a duplicate.
+
+    A copy must also be the same size and sit within a point of the first glyph: the same
+    letter in another word, another size or another line is never a duplicate."""
     seen: dict[tuple, dict] = {}
     out: list[dict] = []
     for c in chars:
         if c["text"].strip() and c["x1"] > c["x0"]:
             key = (c["text"], round(c["x0"]), round(c["top"]))
             first = seen.get(key)
-            if first is not None:
+            if first is not None and _same_glyph_spot(c, first):
                 ligature = abs(c.get("_i", 0) - first.get("_i", 0)) == 1 and (
                     c["x0"], c["x1"], c["top"], c["bottom"]) == (first["x0"], first["x1"], first["top"], first["bottom"])
                 if not ligature:
@@ -365,6 +368,16 @@ def _dedupe_overprint(chars: list[dict]) -> list[dict]:
             seen[key] = c
         out.append(c)
     return out
+
+
+def _same_size(a: float, b: float) -> bool:
+    return abs(a - b) <= 0.1 * max(a, b, 1.0)
+
+
+def _same_glyph_spot(c: dict, first: dict) -> bool:
+    return (_same_size(c.get("size", 0.0), first.get("size", 0.0))
+            and abs(c["x0"] - first["x0"]) <= 1.0 and abs(c["top"] - first["top"]) <= 1.0
+            and abs((c["x1"] - c["x0"]) - (first["x1"] - first["x0"])) <= 1.0)
 
 
 def _untangle(seg: list[dict]) -> list[list[dict]]:
@@ -394,31 +407,61 @@ def _untangle(seg: list[dict]) -> list[list[dict]]:
     return [sorted(r, key=lambda c: c["x0"]) for r in runs]
 
 
-def lines_from_chars(chars: list[dict]) -> list[dict]:
+def lines_from_chars(chars: list[dict], counts: Counter | None = None, scan_layer: bool = False) -> list[dict]:
+    """Build lines from glyphs. `counts` receives how many glyphs and lines the de-duplication
+    passes dropped, so a book's stats show it.
+
+    `scan_layer`: the text is a scan's own OCR layer (invisible text over a page-sized image).
+    Its boxes come from an OCR engine, so they overlap and wobble; the passes that read
+    overlap as a drawing effect (untangling, shadow lines) or blank strips as a column gutter
+    are skipped there."""
     for k, c in enumerate(chars):
         c["_i"] = k  # drawing order, used to untangle overlapping text
         if c.get("text"):
             c["text"] = _clean_char_text(c["text"])
-    upright = _dedupe_overprint([c for c in chars if c.get("upright", True) and c.get("text")])
+    candidates = [c for c in chars if c.get("upright", True) and c.get("text")]
+    upright = _dedupe_overprint(candidates)
     lines: list[dict] = []
     rows = _rows_from_chars(upright)
-    gutters = _find_gutters(rows)
+    gutters = [] if scan_layer else _find_gutters(rows)
     for row in rows:
         for seg in _split_segments(row, gutters):
-            for part in _untangle(seg):
+            for part in [seg] if scan_layer else _untangle(seg):
                 line = _build_line(part)
                 if line is not None:
                     lines.append(line)
-    return _drop_shadow_lines(lines)
+    kept = lines if scan_layer else _drop_shadow_lines(lines)
+    if counts is not None:
+        if len(candidates) > len(upright):
+            counts["overprint_glyphs"] += len(candidates) - len(upright)
+        if len(lines) > len(kept):
+            counts["shadow_lines"] += len(lines) - len(kept)
+    return kept
 
 
 def _drop_shadow_lines(lines: list[dict]) -> list[dict]:
     """Drop a line that repeats another line drawn almost on top of it (a drop shadow or
-    blur effect drawn as offset copies of the text). Real text never overlaps itself."""
+    blur effect drawn as offset copies of the text). Real text never overlaps itself.
+
+    A copy is within 20% of the other's size, within about half a line of its height, and
+    starts within 2.5 em of where its text sits in the other line. A short line that merely
+    overlaps a longer one containing the same words ("Ibid." over a footnote at another
+    size, or words that sit elsewhere in the line) is kept."""
     from rapidfuzz import fuzz
 
     def area(d: dict) -> float:
         return max((d["x1"] - d["x0"]) * (d["bot"] - d["top"]), 0.01)
+
+    def is_copy(s: dict, o: dict) -> bool:
+        # Shadow and pseudo-3D copies are scaled a little (up to 20%) and offset a few points.
+        size = max(s["sz"], o["sz"], 1.0)
+        if abs(s["sz"] - o["sz"]) > 0.2 * size or abs(s["top"] - o["top"]) > 0.6 * size:
+            return False
+        al = fuzz.partial_ratio_alignment(s["t"], o["t"])
+        if al is None or al.score < 90:
+            return False
+        expected = o["x0"] + (o["x1"] - o["x0"]) * al.dest_start / max(len(o["t"]), 1)
+        return abs(s["x0"] - expected) <= 2.5 * size
 
     order = sorted(range(len(lines)), key=lambda i: lines[i]["top"])
     drop: set[int] = set()
@@ -434,7 +477,7 @@ def _drop_shadow_lines(lines: list[dict]) -> list[dict]:
             iy = min(li["bot"], lj["bot"]) - max(li["top"], lj["top"])
             short, other = (i, j) if len(li["t"]) <= len(lj["t"]) else (j, i)
             if (ix > 0 and iy > 0 and ix * iy >= 0.5 * area(lines[short]) and len(lines[short]["t"]) >= 4
-                    and fuzz.partial_ratio(lines[short]["t"], lines[other]["t"]) >= 90):
+                    and is_copy(lines[short], lines[other])):
                 drop.add(short)
     return [ln for k, ln in enumerate(lines) if k not in drop] if drop else lines
 
@@ -585,9 +628,11 @@ def _extract_page_pdfium(src: Source, index: int, assets_dir: Path, ocr=None) ->
         n_paths, image_boxes, path_boxes = page_objects(page)
     finally:
         page.close()
-    lines = lines_from_chars(chars)
-    graphics = path_boxes + image_boxes
     page_area = w * h
+    scan_layer = _is_scan_layer(len(chars), image_boxes, page_area)
+    counts: Counter = Counter()
+    lines = lines_from_chars(chars, counts, scan_layer)
+    graphics = path_boxes + image_boxes
     covered = 0.0
     images = []
     for x0, top, x1, bot in image_boxes:
@@ -610,7 +655,21 @@ def _extract_page_pdfium(src: Source, index: int, assets_dir: Path, ocr=None) ->
         lines, images = find_figures(lines, images, graphics, tables, w, h)
     result: dict[str, Any] = {"n": index + 1, "w": round(w, 2), "h": round(h, 2), "lines": lines,
                               "images": [], "tables": tables, "scanned": scanned, "ocr": False}
+    _note_passes(result, counts, scan_layer)
     return _finish_page(result, images, src.pdfium, index, assets_dir, ocr, w, h)
+
+
+def _is_scan_layer(n_chars: int, image_boxes: list, page_area: float) -> bool:
+    """A scanned page with its own OCR text layer: plenty of text over a page-sized image."""
+    return n_chars >= 200 and any(
+        max(b[2] - b[0], 0.0) * max(b[3] - b[1], 0.0) >= page_area * 0.7 for b in image_boxes)
+
+
+def _note_passes(result: dict, counts: Counter, scan_layer: bool) -> None:
+    if counts:
+        result["dropped"] = dict(counts)  # glyphs and lines removed as overprint or shadows
+    if scan_layer:
+        result["scan_layer"] = True
 
 
 def _drop_scan_backgrounds(images: list[dict], n_chars: int, page_area: float) -> list[dict]:
@@ -754,6 +813,8 @@ def figure_text_ok(inside: list[dict], body: float, n_shapes: int = 1) -> bool:
     text = [ln for ln in inside if ln["t"].strip()]
     if not text:
         return True
+    if prose_in_frame(text, n_shapes):
+        return False  # a framed note or aside, even in footnote type: the author's prose
     total = sum(len(ln["t"]) for ln in text) or 1
     if sum(len(ln["t"]) for ln in text if ln.get("m") and ln["sz"] >= body * SMALL_TEXT) / total >= 0.5:
         return False  # a code listing in a box
@@ -771,6 +832,68 @@ def figure_text_ok(inside: list[dict], body: float, n_shapes: int = 1) -> bool:
     # and not when they line up in rows and columns: that is a table with shaded rows.
     return (len(text) >= 3 and words[len(words) // 2] <= 3 and n_shapes >= 2 * len(text)
             and not _grid_aligned(text))
+
+
+SENTENCE_WORDS = 6  # a line this long is running text, whatever its size; labels are shorter
+
+
+def in_sentences(text: list[dict]) -> float:
+    """Share of the (non-code) characters that sit in lines of sentence length."""
+    prose = [ln for ln in text if not ln.get("m")]
+    total = sum(len(ln["t"]) for ln in prose)
+    if not total:
+        return 0.0
+    return sum(len(ln["t"]) for ln in prose if len(ln["t"].split()) >= SENTENCE_WORDS) / total
+
+
+def prose_in_frame(text: list[dict], n_shapes: int) -> bool:
+    """Running text in a frame: a note or aside, in footnote type or not. Lines of sentence
+    length make up nearly all of it, or most of it inside a plain frame of a few shapes.
+    (Diagrams also hold a few sentence-long examples among their labels.)"""
+    share = in_sentences(text)
+    return share >= 0.8 or (share >= 0.5 and n_shapes <= 12)
+
+
+def body_size_text(text: list[dict], body: float, n_shapes: int, shapes: list | None = None) -> bool:
+    """Is the text in a drawn region set at body size? Then the region is a frame around the
+    author's text (a title page ornament, a boxed formula, an exercise grid), not a figure.
+
+    Charts may label themselves at body size too. A dense one (a sunburst) stays a figure.
+    So does a chart whose labels are mostly numbers set outside its shapes (ticks under the
+    bars); an exercise grid sets its labels inside the drawn cells."""
+    lines = [ln for ln in text if ln["t"].strip()]
+    sizes = sorted(ln["sz"] for ln in lines)
+    if not sizes:
+        return False
+    median = sizes[len(sizes) // 2]
+    if median <= body * 0.85:
+        return False
+    if median > body * 1.05:
+        return True  # a title, larger than the body: never a label
+    if n_shapes >= 100 and n_shapes >= 3 * len(sizes) and len(sizes) >= 5:
+        return False
+    if shapes is None or n_shapes < 20 or n_shapes < 3 * len(lines):
+        return True
+    numeric = sum(1 for ln in lines if any(ch.isdigit() for ch in ln["t"])) / len(lines)
+    return numeric < 0.4 or _in_cells(lines, shapes) >= 0.5
+
+
+def _in_cells(lines: list[dict], shapes: list) -> float:
+    """Share of the lines whose centre lies inside one of the drawing's own boxes (a cell),
+    leaving out frames and backgrounds that span most of the drawing."""
+    if not shapes:
+        return 0.0
+    x0 = min(b[0] for b in shapes)
+    y0 = min(b[1] for b in shapes)
+    x1 = max(b[2] for b in shapes)
+    y1 = max(b[3] for b in shapes)
+    limit = 0.5 * _area((x0, y0, x1, y1))
+    cells = [b for b in shapes if _area(b) < limit and b[2] - b[0] > 2 and b[3] - b[1] > 2]
+    inside = 0
+    for ln in lines:
+        cx, cy = (ln["x0"] + ln["x1"]) / 2, (ln["top"] + ln["bot"]) / 2
+        inside += any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in cells)
+    return inside / len(lines)
 
 
 def _grid_aligned(text: list[dict]) -> bool:
@@ -818,6 +941,7 @@ def find_figures(lines: list[dict], images: list[dict], graphics: list, tables: 
     # its labels look like the page's body text.
     outside = [ln for ln in lines if not any(_inside(ln, r["box"]) for r in regions)]
     body = page_body_size(outside) if sum(len(ln["t"]) for ln in outside) >= 200 else body
+    caption_lines = _caption_continuations(lines)
 
     def grow(region: dict) -> list[int]:
         """Indexes of lines that belong to the region, growing it over nearby small labels."""
@@ -828,8 +952,9 @@ def find_figures(lines: list[dict], images: list[dict], graphics: list, tables: 
             for i, ln in enumerate(lines):
                 if i in members or _is_caption(ln):
                     continue
+                # A label next to a drawing joins it; the second line of its caption doesn't.
                 if _inside(ln, box) or (
-                    region["vector"] and ln["sz"] < body * SMALL_TEXT
+                    region["vector"] and ln["sz"] < body * SMALL_TEXT and i not in caption_lines
                     and _near(box, _line_box(ln), FIGURE_NEAR) and (ln["x1"] - ln["x0"]) < (box[2] - box[0]) * 1.2
                 ):
                     members.add(i)
@@ -847,7 +972,8 @@ def find_figures(lines: list[dict], images: list[dict], graphics: list, tables: 
         if region["vector"]:
             if not inside and region["n"] < 3:
                 continue
-            if not figure_text_ok(inside, body, region["n"]):
+            own = [b for b in shapes if _overlap_share(b, region["grown"]) > 0.9]
+            if body_size_text(inside, body, region["n"], own) or not figure_text_ok(inside, body, region["n"]):
                 continue
             # Aligned text with rules or shaded rows around it is a table. Small value labels
             # aligned over a chart's many bars and gridlines are still a chart.
@@ -894,6 +1020,28 @@ def find_figures(lines: list[dict], images: list[dict], graphics: list, tables: 
             entry["text"] = text
         out_figs.append(entry)
     return [ln for i, ln in enumerate(lines) if i not in taken], out_figs
+
+
+def _caption_continuations(lines: list[dict]) -> set[int]:
+    """Indexes of the lines that carry on a caption: each sits right under the caption (or
+    under its previous line), at its size, starting near its left edge."""
+    order = sorted(range(len(lines)), key=lambda i: (lines[i]["top"], lines[i]["x0"]))
+    out: set[int] = set()
+    heads = [i for i in order if _is_caption(lines[i])]
+    for h in heads:
+        prev = lines[h]
+        for j in order:
+            ln = lines[j]
+            if j == h or j in out or ln["top"] <= prev["top"]:
+                continue
+            gap = ln["top"] - prev["bot"]
+            if (-1.0 <= gap <= 0.8 * prev["sz"] and abs(ln["sz"] - prev["sz"]) <= 0.5
+                    and abs(ln["x0"] - lines[h]["x0"]) <= 2 * prev["sz"] and not _is_caption(ln)):
+                out.add(j)
+                prev = ln
+            elif ln["top"] > prev["bot"] + 2 * prev["sz"]:
+                break
+    return out
 
 
 def _trim_at_captions(region: dict, lines: list[dict]) -> None:
@@ -1006,10 +1154,14 @@ def _extract_page_plumber(plumber_pdf, pdfium_doc, index: int, assets_dir: Path,
             c["x1"] -= x_off
             c["top"] -= y_off
             c["bottom"] -= y_off
-        lines = lines_from_chars(chars)
+        page_area = w * h
+        image_boxes = [(float(im["x0"]) - x_off, float(im["top"]) - y_off, float(im["x1"]) - x_off,
+                        float(im["bottom"]) - y_off) for im in page.images]
+        scan_layer = _is_scan_layer(len(chars), image_boxes, page_area)
+        counts: Counter = Counter()
+        lines = lines_from_chars(chars, counts, scan_layer)
 
         images = []
-        page_area = w * h
         covered = 0.0
         for i, im in enumerate(page.images):
             x0, x1 = float(im["x0"]) - x_off, float(im["x1"]) - x_off
@@ -1062,6 +1214,7 @@ def _extract_page_plumber(plumber_pdf, pdfium_doc, index: int, assets_dir: Path,
             "scanned": scanned,
             "ocr": False,
         }
+        _note_passes(result, counts, scan_layer)
         return _finish_page(result, images, pdfium_doc, index, assets_dir, ocr, w, h)
     finally:
         try:

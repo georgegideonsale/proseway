@@ -188,6 +188,134 @@ def test_ligature_letters_are_not_taken_for_overprint():
     assert [ln["t"] for ln in lines_from_chars(shadow)] == ["correct"]
 
 
+def test_dedupe_keeps_text_at_another_size():
+    """'Ibid.' set large over a small footnote line that also starts with 'Ibid.': two lines at
+    different sizes. Neither the glyph de-duplication nor the shadow-line pass may drop one."""
+    from collections import Counter
+
+    from proseway.pipeline.extract import _drop_shadow_lines, lines_from_chars
+
+    def chars(text, x0, top, size):
+        out, x = [], x0
+        for t in text:
+            w = size * (0.25 if t == " " else 0.5)
+            out.append({"text": t, "fontname": "Times", "size": size, "x0": x, "x1": x + w,
+                        "top": top, "bottom": top + size, "upright": True})
+            x += w
+        return out
+
+    note = "Ibid. vol. i. p. 245, and the authorities"
+    counts: Counter = Counter()
+    lines = lines_from_chars(chars(note, 72, 100, 6.0) + chars("Ibid.", 72, 98, 11.0), counts)
+    assert sorted(ln["t"] for ln in lines) == sorted([note, "Ibid."])
+    assert not counts
+    # The same two lines handed straight to the shadow pass, boxes overlapping.
+    pair = [{"t": note, "x0": 72.0, "x1": 200.0, "top": 100.0, "bot": 106.0, "sz": 6.0},
+            {"t": "Ibid.", "x0": 72.0, "x1": 96.0, "top": 98.0, "bot": 109.0, "sz": 11.0}]
+    assert _drop_shadow_lines(pair) == pair
+    # A same-size copy drawn a point off is still a shadow, and is counted.
+    shadow = chars("Seed tasks", 300, 100, 10.0) + chars("Seed tasks", 301, 101, 10.0)
+    counts = Counter()
+    assert [ln["t"] for ln in lines_from_chars(shadow, counts)] == ["Seed tasks"]
+    assert sum(counts.values()) > 0
+
+
+def _fig_line(t, x0, top, sz, mono=False):
+    return {"t": t, "x0": float(x0), "x1": x0 + len(t) * sz * 0.5, "top": float(top), "bot": top + sz,
+            "sz": float(sz), "m": mono}
+
+
+def _body_lines(top=520):
+    return [_fig_line("The body of the page runs on here in ordinary type, line after line of it.", 72, top + 14 * k, 11)
+            for k in range(8)]
+
+
+def test_title_in_an_ornament_stays_text():
+    """A title page: the title is set inside a drawn ornament. Body-size (or larger) text in a
+    drawing is the author's text, not figure labels, so it stays in the reading flow."""
+    from proseway.pipeline.extract import find_figures
+
+    # Two chains of small flourishes down the sides, joined by rules at the top and bottom.
+    ring = [(150 + 300 * (k % 2), 100 + 8 * (k // 2), 156 + 300 * (k % 2), 106 + 8 * (k // 2)) for k in range(40)]
+    ring += [(150, 96, 456, 98), (150, 264, 456, 266)]
+    title = [_fig_line("THE HISTORY", 220, 150, 18), _fig_line("OF ROME", 245, 190, 18),
+             _fig_line("Volume the First", 240, 240, 12)]
+    lines = title + _body_lines()
+    kept, figs = find_figures(lines, [], ring, [], 612.0, 792.0)
+    assert [ln["t"] for ln in kept] == [ln["t"] for ln in lines]
+    assert not any(f.get("text") for f in figs)
+
+
+def test_framed_note_and_caption_lines_stay_in_the_flow():
+    """A framed note in footnote type is prose, at any size. A caption's second line beside a
+    drawing is not one of its labels. A real drawing next to them is still a figure."""
+    from proseway.pipeline.extract import find_figures
+
+    frame = [(70, 60, 540, 61), (70, 120, 540, 121), (70, 60, 71, 121), (539, 60, 540, 121)]
+    note = [_fig_line("Note: the figures in this chapter are rounded to the nearest whole unit.", 80, 70, 7),
+            _fig_line("Totals may therefore differ slightly from the sum of the parts shown.", 80, 82, 7),
+            _fig_line("See the appendix for the exact values used in every calculation.", 80, 94, 7)]
+    # A diagram: boxes and arrows with short 7 pt labels, captioned below.
+    diagram = [(100 + 60 * k, 200, 140 + 60 * k, 250) for k in range(5)]
+    diagram += [(140 + 60 * k, 224, 160 + 60 * k, 226) for k in range(4)]
+    labels = [_fig_line(t, 104 + 60 * k, 220, 7) for k, t in enumerate(["Seed", "Prompt", "Filter", "Pool", "Train"])]
+    caption = [_fig_line("Figure 2: The method, step by step, from the", 100, 251, 8),
+               _fig_line("seed tasks to the pool that the model is finally trained on.", 100, 259.5, 8)]
+    lines = note + labels + caption + _body_lines()
+    kept, figs = find_figures(lines, [], frame + diagram, [], 612.0, 792.0)
+    kept_text = [ln["t"] for ln in kept]
+    for ln in note + caption:
+        assert ln["t"] in kept_text
+    assert len(figs) == 1 and all(t in figs[0]["text"] for t in ("Seed", "Prompt", "Train"))
+    assert figs[0]["bot"] < 255
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_scan_text_layer_is_read_as_plain_text(lib, tmp_path, engine, monkeypatch):
+    """A scan with the scanner's own OCR text layer: its contents list is not taken for a
+    table, and nothing is dropped as a duplicate where OCR boxes overlap."""
+    paths, db = lib
+    pdf = tmp_path / "layer.pdf"
+    pdfgen.make_scan_with_text_layer(pdf, pages=2)
+    bid = convert(paths, db, pdf, engine, monkeypatch)
+    assert book_row(db, bid)["status"] == "ready"
+    out = blocks(db, bid)
+    assert not [b for b in out if b["type"] == "table"]
+    joined = norm(" ".join(b["text"] for b in out))
+    for line in pdfgen.SCAN_LAYER_BODY:
+        assert norm(line) in joined
+    for row in pdfgen.SCAN_LAYER_CONTENTS:
+        for cell in row:
+            assert cell in joined
+    assert joined.count(pdfgen.SCAN_LAYER_NOTE) == 2
+    removed = json.loads(book_row(db, bid)["stats_json"])["removed"]
+    assert "text_tables" not in removed and "shadow_lines" not in removed
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_ocr_pages_lose_watermarks_and_noisy_headings(lib, tmp_path, engine, monkeypatch):
+    """OCR'd pages, with a deterministic stand-in for the OCR engine that reproduces real
+    Trifles noise: the running head and the watermark (in any of its misreadings) go, size
+    estimates that wobble by 25% make no headings, and every speech stays on its page."""
+    from proseway.pipeline import ocr
+
+    monkeypatch.setattr(ocr, "available", lambda: True)
+    monkeypatch.setattr(ocr, "get_engine", lambda: pdfgen.FakeOcr())
+    paths, db = lib
+    pdf = tmp_path / "scan.pdf"
+    pdfgen.make_image_scan(pdf, pages=4)
+    bid = convert(paths, db, pdf, engine, monkeypatch)
+    out = blocks(db, bid)
+    assert json.loads(book_row(db, bid)["stats_json"])["ocr_pages"] == 4
+    assert [b["text"] for b in out if b["type"] == "heading"] == ["A PLAY IN ONE ACT"]
+    paras = [norm(b["text"]) for b in out if b["type"] == "paragraph"]
+    assert paras == [norm(s) for s in pdfgen.OCR_SPEECHES] * 4
+    joined = " ".join(b["text"] for b in out)
+    for stamp in ("TRIFLES", "Google", "Gogle", "Dig", "Dgu", "zed by"):
+        assert stamp not in joined
+    assert [b["page"] for b in out if b["type"] == "paragraph"] == [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4]
+
+
 def test_scan_text_layer_is_not_figure_text():
     """A sparse scanned page (title page) under its own OCR text layer: the page image stays a
     picture and the short title lines stay text, even though they look like labels."""
@@ -247,8 +375,9 @@ def test_ocr_watermarks_and_heading_sizes():
         assert line in joined  # every word of the play is still there
 
 
-def test_ocr_scan_end_to_end(lib, tmp_path):
-    """A generated image-only scan through the real OCR engine (skipped without the add-on)."""
+def test_ocr_scan_with_real_engine(lib, tmp_path):
+    """A generated image-only scan through the real OCR engine. Skipped without the add-on;
+    test_ocr_pages_lose_watermarks_and_noisy_headings covers the same path deterministically."""
     pytest.importorskip("rapidocr_onnxruntime")
     from rapidfuzz import fuzz
 

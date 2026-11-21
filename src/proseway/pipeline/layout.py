@@ -145,7 +145,9 @@ def remove_running_elements(pages: list[list[Line]], heights: list[float], body:
             bot_idx = set(ordered[-3:])
             # Body extent, to recognise lines that sit apart in the margins.
             for i, ln in enumerate(lines):
-                if ln.size > body * 1.3:
+                # Big type at the top is a chapter title, not a running head. OCR sizes are
+                # guessed from box heights (Trifles' head comes out at 1.4x), so they get more room.
+                if ln.size > body * (1.6 if ln.font == "OCR" else 1.3):
                     continue
                 if i in top_idx and ln.top < h * 0.16:
                     cand.append((i, "top", running_key(ln.text)))
@@ -232,7 +234,9 @@ def remove_watermarks(pages: list[list[Line]], heights: list[float], removed: Co
                 for wm in WATERMARKS:
                     if len(key) >= 8 and fuzz.ratio(key, wm) >= 80:
                         strong[wm].append((ln.top + ln.bot) / 2 / h)
-    established = {wm: statistics.median(ys) for wm, ys in strong.items() if len(ys) >= 3}
+    # Three clear readings establish the stamp; a short scan needs only about a quarter of its pages.
+    need = min(3, len(pages) // 4 + 1)
+    established = {wm: statistics.median(ys) for wm, ys in strong.items() if len(ys) >= need}
 
     out: list[list[Line]] = []
     for lines, h in zip(pages, heights, strict=True):
@@ -892,6 +896,8 @@ def assemble(pages_data: list[dict], outline: list[dict] | None = None) -> dict[
     raw_pages = [[_to_line(d, p["n"]) for d in p["lines"]] for p in pages_data]
     heights = [p["h"] for p in pages_data]
     removed: Counter = Counter()
+    for p in pages_data:
+        removed.update(p.get("dropped", {}))  # overprinted glyphs and shadow lines, from extraction
     # Watermarks go first, so their (often large) type doesn't count as a heading size.
     cleaned = remove_watermarks(raw_pages, heights, removed)
     stats = compute_stats(cleaned)
@@ -900,7 +906,8 @@ def assemble(pages_data: list[dict], outline: list[dict] | None = None) -> dict[
     page_tables: list[list[dict]] = []
     for lines, p in zip(cleaned, pages_data, strict=True):
         found: list[dict] = []
-        if not p.get("ocr"):  # OCR boxes are too unevenly placed to read as a grid
+        # OCR boxes, ours or a scan's own text layer, are too unevenly placed to read as a grid.
+        if not p.get("ocr") and not p.get("scan_layer"):
             ruled = [t["bbox"] for t in p.get("tables", [])]
             in_ruled = [ln for ln in lines if any(_center_in(ln, b) for b in ruled)]
             free = [ln for ln in lines if not any(_center_in(ln, b) for b in ruled)]

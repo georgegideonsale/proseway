@@ -345,3 +345,122 @@ def make_encrypted(path: Path) -> None:
     c = canvas.Canvas(str(path), pagesize=letter, encrypt=enc)
     c.drawString(72, 700, "Secret text")
     c.save()
+
+
+# ---------------------------------------------------------------------------
+# OCR fixtures (pipeline-quality): a deterministic stand-in for the OCR engine, and a scan
+# that carries its own OCR text layer. Self-contained: nothing above depends on them.
+# ---------------------------------------------------------------------------
+
+OCR_SPEECHES = [
+    "MRS. HALE: I wish you had seen Minnie Foster when she wore a white dress with blue ribbons and "
+    "stood up there in the choir and sang.",
+    "MRS. PETERS: Well, I must get those things from the front room closet. She said she wanted an "
+    "apron, and a shawl to put around her.",
+    "COUNTY ATTORNEY: Nothing here but kitchen things, and not much of anything to tell us what "
+    "happened in this house that night.",
+]
+# How OCR read the stamp on four pages of a real scan (one of them as two boxes).
+WATERMARK_READINGS = [["Digize byGoogle"], ["Dguiea ygGoogle"], ["zed by", "Google"], ["Diglied byGogle"]]
+
+
+def make_image_scan(path: Path, pages: int = 3) -> None:
+    """Image-only pages: a scan without a text layer."""
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+
+    c = canvas.Canvas(str(path), pagesize=letter)
+    for _ in range(pages):
+        img = Image.new("L", (306, 396), 240)
+        c.drawImage(ImageReader(img), 0, 0, width=W, height=H)
+        c.showPage()
+    c.save()
+
+
+def fake_ocr_lines(index: int) -> list[dict]:
+    """What a RapidOCR pass over a page of an old play returns: a running head and page
+    number at the top, a watermark at the bottom, and type sizes that swing by 25% from
+    line to line because they are guessed from box heights."""
+    noisy = [8.5, 9.0, 8.5, 11.5, 8.0, 8.5, 10.5, 9.0]  # one body size, as OCR guesses it
+    out: list[dict] = []
+
+    def line(t: str, x0: float, top: float, x1: float, sz: float) -> None:
+        out.append({"t": t, "x0": x0, "x1": x1, "top": top, "bot": top + sz * 1.35, "sz": sz,
+                    "font": "OCR", "b": False, "i": False, "m": False, "mt": 0.0, "sp": [], "conf": 0.97})
+
+    line("TRIFLES", 270, 40, 340, 12.0)  # running head, guessed at 1.4x the body size
+    line(str(index + 21), 520, 40, 534, 10.5)
+    # (The fixture repeats its speeches on every page; starting below the header zone keeps
+    # the first one from looking like a repeated running head.)
+    y = 140.0
+    if index == 0:
+        line("A PLAY IN ONE ACT", 220, y, 390, 20.0)  # a real title: twice the size, on its own
+        y += 50
+    for s in OCR_SPEECHES:
+        words = s.split()
+        rows = [" ".join(words[k:k + 9]) for k in range(0, len(words), 9)]
+        for r, text in enumerate(rows):
+            line(text, 90 if r == 0 else 72, y, 540, noisy[(r + index) % len(noisy)])
+            y += 15
+        y += 10
+    x = 400.0
+    for piece in WATERMARK_READINGS[index % len(WATERMARK_READINGS)]:
+        line(piece, x, 740, x + 6 * len(piece), 10.5)
+        x += 6 * len(piece) + 20
+    return out
+
+
+class FakeOcr:
+    """Stands in for RapidOCR so the OCR path is tested without the optional models."""
+
+    def page_lines(self, pdfium_doc, index: int, page_w: float, page_h: float) -> list[dict]:
+        return fake_ocr_lines(index)
+
+
+SCAN_LAYER_BODY = [
+    "The emperor was obliged to acknowledge that the legions on the frontier were no longer",
+    "to be trusted, and that the provinces which they had defended so long were now open",
+    "to the incursions of the barbarians, who crossed the river whenever the ice allowed.",
+    "His ministers advised him to purchase a peace which he had no means of enforcing, and",
+    "the senate, which had lost the habit of resistance, approved whatever was proposed.",
+]
+# A contents list on the same scan: short entries that line up like the cells of a table.
+SCAN_LAYER_CONTENTS = [["CHAP. I.", "The Extent of the Empire", "1"],
+                       ["CHAP. II.", "The Union and Prosperity", "27"],
+                       ["CHAP. III.", "The Constitution", "64"],
+                       ["CHAP. IV.", "The Cruelty of Commodus", "98"]]
+SCAN_LAYER_NOTE = "Ibid. vol. i. p. 245, and the authorities collected there."
+
+
+def make_scan_with_text_layer(path: Path, pages: int = 2) -> None:
+    """A scanned book page with the scanner's own OCR text layer: a page-sized image and
+    invisible text over it. The layer has a contents list aligned in columns and a footnote."""
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+
+    c = canvas.Canvas(str(path), pagesize=letter)
+    for _ in range(pages):
+        img = Image.new("L", (306, 396), 235)
+        c.drawImage(ImageReader(img), 0, 0, width=W, height=H)
+        t = c.beginText()
+        t.setTextRenderMode(3)  # invisible, like an OCR layer
+        y = H - 220  # below the zone where a lone number reads as a page number
+        for row in SCAN_LAYER_CONTENTS:
+            for x, cell in zip((90, 170, 460), row, strict=True):
+                t.setFont("Times-Roman", 11)
+                t.setTextOrigin(x, y)
+                t.textOut(cell)
+            y -= 16
+        y -= 20
+        for line in SCAN_LAYER_BODY:
+            t.setFont("Times-Roman", 11)
+            t.setTextOrigin(72, y)
+            t.textOut(line)
+            y -= 15
+        y -= 20
+        t.setFont("Times-Roman", 8)
+        t.setTextOrigin(72, y)
+        t.textOut(SCAN_LAYER_NOTE)
+        c.drawText(t)
+        c.showPage()
+    c.save()
