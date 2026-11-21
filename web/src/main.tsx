@@ -22,8 +22,10 @@ createRoot(document.getElementById("root")!).render(
   </StrictMode>,
 );
 
-// Offline reading needs a service worker, which browsers only allow in a secure context
-// (localhost). Phones reach Proseway over plain HTTP, so they don't get offline caching yet.
+// Offline reading needs a service worker, which browsers only allow in a secure context:
+// localhost on the computer, and on a phone only when sharing uses the secure (HTTPS)
+// connection and the phone trusts Proseway's certificate. Over plain-HTTP sharing,
+// isSecureContext is false and the phone simply reads online.
 if ("serviceWorker" in navigator && window.isSecureContext && import.meta.env.PROD) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }

@@ -35,12 +35,26 @@ def main(argv: list[str] | None = None) -> int:
                         help="local port (default 8765, or the next free one)")
     parser.add_argument("--data-dir", type=Path, default=None, help="where to keep your library")
     parser.add_argument("--no-browser", action="store_true", help="don't open a browser window")
+    parser.add_argument("--new-phone-certificate", action="store_true",
+                        help="replace the certificate used for secure phone sharing, then exit "
+                             "(phones must trust the new one again)")
     parser.add_argument("--version", action="version", version=f"proseway {__version__}")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    if args.new_phone_certificate:
+        from . import certs
+
+        data_dir = (args.data_dir or default_data_dir()).expanduser().resolve()
+        removed = certs.remove_all(data_dir / "certs")
+        print(f"  Removed {removed} certificate{'' if removed == 1 else 's'} for secure phone sharing.")
+        print("  A new one is made the next time you turn on secure sharing. Remove the old Proseway")
+        print("  certificate from your phones, then trust the new one.")
+        print("  If Proseway is running with sharing on, turn sharing off and on again.")
+        return 0
 
     import uvicorn
 

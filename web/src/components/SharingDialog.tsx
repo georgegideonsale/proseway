@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { SharingState } from "../types";
 import { Dialog } from "./Dialog";
@@ -10,6 +10,8 @@ const DURATIONS = [
   { minutes: 720, label: "12 hours" },
 ];
 
+const SECURE_KEY = "proseway.share.secure";
+
 function timeLeft(ts: number | null): string {
   if (!ts) return "";
   const mins = Math.max(0, Math.round((ts - Date.now() / 1000) / 60));
@@ -17,13 +19,63 @@ function timeLeft(ts: number | null): string {
   return `${mins} min`;
 }
 
+function loadSecure(): boolean {
+  try {
+    return localStorage.getItem(SECURE_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function saveSecure(on: boolean) {
+  try {
+    localStorage.setItem(SECURE_KEY, on ? "1" : "0");
+  } catch {
+    /* private mode: the choice just isn't remembered */
+  }
+}
+
+function Fingerprint({ value }: { value: string }) {
+  // Grouped in fours so it's easy to compare with what the phone shows.
+  const pairs = value.split(":");
+  const groups: string[] = [];
+  for (let i = 0; i < pairs.length; i += 4) groups.push(pairs.slice(i, i + 4).join(":"));
+  return (
+    <code className="fingerprint">
+      <span className="visually-hidden">SHA-256 fingerprint: </span>
+      {groups.map((g, i) => (
+        <span key={i}>{g}</span>
+      ))}
+    </code>
+  );
+}
+
 export function SharingDialog({ onClose }: { onClose: () => void }) {
   const [state, setState] = useState<SharingState | null>(null);
   const [address, setAddress] = useState("");
   const [minutes, setMinutes] = useState(120);
+  const [secure, setSecure] = useState(loadSecure);
+  const [showSetup, setShowSetup] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [qrKey, setQrKey] = useState(0);
+  // "Set up this phone" and "Done, show the pairing code" replace the view they're in, so focus
+  // moves to the new view's heading (which also announces it) instead of dropping to the page.
+  const viewHeading = useRef<HTMLHeadingElement>(null);
+  const moveFocus = useRef(false);
+
+  function switchView(setup: boolean) {
+    moveFocus.current = true;
+    setShowSetup(setup);
+    if (setup) setQrKey((k) => k + 1);
+  }
+
+  useEffect(() => {
+    if (moveFocus.current) {
+      moveFocus.current = false;
+      viewHeading.current?.focus();
+    }
+  }, [showSetup]);
 
   useEffect(() => {
     let alive = true;
@@ -51,8 +103,10 @@ export function SharingDialog({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      const s = await api.setSharing(on, address, minutes);
+      const useSecure = on && secure && !!state?.secureAvailable;
+      const s = await api.setSharing(on, address, minutes, useSecure);
       setState(s);
+      setShowSetup(false);
       setQrKey((k) => k + 1);
     } catch (e) {
       setError((e as Error).message);
@@ -60,6 +114,8 @@ export function SharingDialog({ onClose }: { onClose: () => void }) {
       setBusy(false);
     }
   }
+
+  const setupQr = !!state?.enabled && state.secure && showSetup && !!state.setupUrl;
 
   return (
     <Dialog title="Read on your phone" onClose={onClose} wide>
@@ -74,32 +130,59 @@ export function SharingDialog({ onClose }: { onClose: () => void }) {
           {state.addresses.length === 0 ? (
             <p className="form-error">This computer doesn't seem to be connected to a local network.</p>
           ) : (
-            <div className="share-options">
-              {state.addresses.length > 1 && (
+            <>
+              <div className="share-options">
+                {state.addresses.length > 1 && (
+                  <div className="field">
+                    <label htmlFor="sh-addr">Network</label>
+                    <select id="sh-addr" className="input" value={address} onChange={(e) => setAddress(e.target.value)}>
+                      {state.addresses.map((a) => (
+                        <option key={a.address} value={a.address}>
+                          {a.interface} ({a.address})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div className="field">
-                  <label htmlFor="sh-addr">Network</label>
-                  <select id="sh-addr" className="input" value={address} onChange={(e) => setAddress(e.target.value)}>
-                    {state.addresses.map((a) => (
-                      <option key={a.address} value={a.address}>
-                        {a.interface} ({a.address})
+                  <label htmlFor="sh-dur">Turn off automatically after</label>
+                  <select id="sh-dur" className="input" value={minutes} onChange={(e) => setMinutes(Number(e.target.value))}>
+                    {DURATIONS.map((d) => (
+                      <option key={d.minutes} value={d.minutes}>
+                        {d.label}
                       </option>
                     ))}
                   </select>
                 </div>
-              )}
-              <div className="field">
-                <label htmlFor="sh-dur">Turn off automatically after</label>
-                <select id="sh-dur" className="input" value={minutes} onChange={(e) => setMinutes(Number(e.target.value))}>
-                  {DURATIONS.map((d) => (
-                    <option key={d.minutes} value={d.minutes}>
-                      {d.label}
-                    </option>
-                  ))}
-                </select>
               </div>
-            </div>
+              {state.secureAvailable && (
+                <div className="share-secure">
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={secure}
+                      aria-describedby="sh-secure-hint"
+                      onChange={(e) => {
+                        setSecure(e.target.checked);
+                        saveSecure(e.target.checked);
+                      }}
+                    />
+                    <span>Secure connection (recommended)</span>
+                  </label>
+                  <p id="sh-secure-hint" className="share-hint">
+                    Encrypts everything between your phone and this computer, and lets your phone add Proseway to its home
+                    screen and keep chapters for reading offline. Each phone has to trust Proseway's certificate once. We'll
+                    show you how.
+                  </p>
+                </div>
+              )}
+            </>
           )}
-          <p className="share-note">Only use this on a network you trust, like your home Wi-Fi. Your computer may ask whether to allow the connection.</p>
+          <p className="share-note">
+            {secure && state.secureAvailable
+              ? "Your computer may ask whether to allow the connection."
+              : "Without a secure connection, someone else on the same network could see what you read. Only use it on a network you trust, like your home Wi-Fi. Your computer may ask whether to allow the connection."}
+          </p>
           {error && (
             <p className="form-error" role="alert">
               {error}
@@ -118,24 +201,83 @@ export function SharingDialog({ onClose }: { onClose: () => void }) {
         <div className="share-on">
           <div className="share-grid">
             <div className="qr-frame">
-              {state.pairing && !state.locked ? (
+              {setupQr ? (
+                <img
+                  key={`setup-${qrKey}`}
+                  src={`/api/sharing/qr.svg?target=setup&k=${qrKey}`}
+                  alt={`QR code that opens the certificate setup page, ${state.setupUrl}`}
+                />
+              ) : state.pairing && !state.locked ? (
                 <img key={qrKey} src={`/api/sharing/qr.svg?k=${qrKey}`} alt={`QR code that opens ${state.url} and pairs your phone`} />
               ) : (
                 <p className="qr-locked">Pairing is paused after several wrong codes.</p>
               )}
             </div>
-            <ol className="share-steps">
-              <li>Connect your phone to the same Wi-Fi as this computer.</li>
-              <li>Scan the code with your phone's camera.</li>
-              <li>
-                Or open <strong className="share-url">{state.url}</strong> and enter
-                <span className="pair-code" aria-label={`code ${state.pairing?.code.split("").join(" ")}`}>
-                  {state.pairing?.code.slice(0, 3)}
-                  <span className="pair-code-gap" />
-                  {state.pairing?.code.slice(3)}
-                </span>
-              </li>
-            </ol>
+            {setupQr ? (
+              <div className="share-view">
+                <h3 className="share-view-title" tabIndex={-1} ref={viewHeading}>
+                  Set up this phone
+                </h3>
+                <ol className="share-steps">
+                  <li>Scan this code with your phone's camera. It opens a setup page on your Wi-Fi.</li>
+                  <li>Download Proseway's certificate there and trust it. The page walks you through it on iPhone and Android.</li>
+                  {state.ca && (
+                    <li>
+                      Your phone should show this fingerprint for the certificate. If it shows a different one, don't trust it.
+                      <Fingerprint value={state.ca.fingerprint} />
+                    </li>
+                  )}
+                  <li>
+                    Safer, if you can: send the certificate from this computer instead, for example by AirDrop or a USB
+                    cable.{" "}
+                    <a href="/api/sharing/ca.crt" download>
+                      Download the certificate
+                    </a>
+                    . The setup page isn't encrypted, so someone on the network could swap in a certificate of their own.
+                  </li>
+                  <li>
+                    <button className="link-btn" onClick={() => switchView(false)}>
+                      Done, show the pairing code
+                    </button>
+                  </li>
+                </ol>
+              </div>
+            ) : (
+              <div className="share-view">
+                <h3 className="share-view-title" tabIndex={-1} ref={viewHeading}>
+                  Pair your phone
+                </h3>
+                <ol className="share-steps">
+                  <li>Connect your phone to the same Wi-Fi as this computer.</li>
+                  {state.secure && (
+                    <li>
+                      First time on this phone? Trust Proseway's certificate once.{" "}
+                      {state.setupUrl ? (
+                        <button className="link-btn" onClick={() => switchView(true)}>
+                          Set up this phone
+                        </button>
+                      ) : (
+                        <a className="link-btn" href="/api/sharing/ca.crt" download>
+                          Download the certificate
+                        </a>
+                      )}
+                    </li>
+                  )}
+                  <li>Scan the code with your phone's camera.</li>
+                  <li>
+                    Or open <strong className="share-url">{state.url}</strong> and enter
+                    <span className="pair-code">
+                      <span className="visually-hidden">the code {state.pairing?.code.split("").join(" ")}</span>
+                      <span aria-hidden="true">
+                        {state.pairing?.code.slice(0, 3)}
+                        <span className="pair-code-gap" />
+                        {state.pairing?.code.slice(3)}
+                      </span>
+                    </span>
+                  </li>
+                </ol>
+              </div>
+            )}
           </div>
           <p className="share-meta">
             Sharing turns off in {timeLeft(state.expiresAt)}. Codes work once and expire after five minutes.
@@ -143,6 +285,20 @@ export function SharingDialog({ onClose }: { onClose: () => void }) {
               New code
             </button>
           </p>
+          {state.secure ? (
+            <p className="share-note">
+              Secure connection. If your phone warns about the certificate, it hasn't trusted it yet. You can also{" "}
+              <a href="/api/sharing/ca.crt" download>
+                download the certificate
+              </a>{" "}
+              and send it to your phone yourself, for example by AirDrop or a USB cable.
+            </p>
+          ) : (
+            <p className="share-note">
+              This connection isn't encrypted, so your phone can't install Proseway or read offline. Turn sharing off and
+              on again to choose a secure connection.
+            </p>
+          )}
           {state.devices.length > 0 && (
             <section className="devices" aria-label="Paired devices">
               <h3>Paired devices</h3>

@@ -303,3 +303,113 @@ def test_skipped_page_is_visible_not_silent(app, tmp_path):
     assert [b.type for b in result["blocks"]][-1] == "page_image"
     assert result["blocks"][-1].data == {"failed": True}
     assert result["stats"]["failed_pages"] == [2]
+
+
+# ------------------------------------------------------------------ body size limits
+
+
+def chunked(data: bytes, size: int = 64 * 1024):
+    """A request body with no Content-Length (sent as Transfer-Encoding: chunked)."""
+    for i in range(0, len(data), size):
+        yield data[i:i + size]
+
+
+def multipart(field: str, filename: str, payload: bytes) -> tuple[bytes, str]:
+    boundary = "proseway-test-boundary"
+    body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{filename}\"\r\n"
+            f"Content-Type: application/octet-stream\r\n\r\n").encode() + payload + f"\r\n--{boundary}--\r\n".encode()
+    return body, f"multipart/form-data; boundary={boundary}"
+
+
+def test_chunked_upload_over_the_limit_is_refused(client, app, monkeypatch):
+    from proseway import library
+    from proseway import server as server_mod
+
+    monkeypatch.setattr(library, "MAX_UPLOAD_BYTES", 4096)
+    monkeypatch.setattr(server_mod, "UPLOAD_SLACK", 1024)
+    body, ctype = multipart("files", "big.pdf", b"%PDF-1.4\n" + b"x" * 200_000)
+    r = client.post("/api/books", content=chunked(body), headers={**H, "Content-Type": ctype})
+    assert "content-length" not in {k.lower() for k in r.request.headers}
+    assert r.status_code == 413 and r.json()["error"]["code"] == "too_large"
+    assert r.headers["x-content-type-options"] == "nosniff"  # still gets the security headers
+    assert client.get("/api/books").json()["books"] == []
+    # The same upload with a declared length is refused before anything is read.
+    assert client.post("/api/books", content=body, headers={**H, "Content-Type": ctype}).status_code == 413
+
+
+def test_chunked_restore_over_the_limit_is_refused(client, monkeypatch):
+    from proseway import server as server_mod
+
+    monkeypatch.setattr(server_mod, "RESTORE_LIMIT", 1000)
+    body, ctype = multipart("file", "b.json", b"[" + b" " * (2**20 + 5000) + b"]")
+    r = client.post("/api/restore", content=chunked(body), headers={**H, "Content-Type": ctype})
+    # "too_large" comes from the body limit, before the multipart parser spooled it all.
+    assert r.status_code == 413 and r.json()["error"]["code"] == "too_large"
+
+
+def test_small_chunked_bodies_still_work(client, book):
+    p = first_paragraph(client, book)
+    data = json.dumps({"kind": "highlight", "blockId": p["id"], "start": 0, "end": 4}).encode()
+    r = client.post(f"/api/books/{book}/annotations", content=chunked(data, 7),
+                    headers={**H, "Content-Type": "application/json"})
+    assert r.status_code == 200, r.text
+
+
+def test_bad_content_length_is_refused(client):
+    r = client.post("/api/sharing", content=b"{}", headers={**H, "Content-Length": "abc",
+                                                            "Content-Type": "application/json"})
+    assert r.status_code == 400
+
+
+def test_paired_phone_json_is_capped(book, lan):
+    c, s = lan
+    assert c.post("/api/pair", headers=H, json={"secret": s.state.pairing.code}).status_code == 200
+    p = first_paragraph(c, book)
+    huge = json.dumps({"kind": "highlight", "blockId": p["id"], "start": 0, "end": 4,
+                       "note": "n" * (2 * 2**20)}).encode()
+    hj = {**H, "Content-Type": "application/json"}
+    assert c.post(f"/api/books/{book}/annotations", content=huge, headers=hj).status_code == 413
+    assert c.post(f"/api/books/{book}/annotations", content=chunked(huge), headers=hj).status_code == 413
+    # A long note within reason still works from the phone.
+    ok = json.dumps({"kind": "highlight", "blockId": p["id"], "start": 0, "end": 4, "note": "n" * 20000})
+    assert c.post(f"/api/books/{book}/annotations", content=ok, headers=hj).status_code == 200
+
+
+# ------------------------------------------------------------------ EPUB language
+
+
+def _opf(client, book) -> str:
+    z = zipfile.ZipFile(io.BytesIO(client.get(f"/api/books/{book}/export.epub").content))
+    return z.read("OEBPS/content.opf").decode(), z.read("OEBPS/ch0000.xhtml").decode()
+
+
+def test_epub_language_is_und_without_pdf_metadata(client, book):
+    opf, chapter = _opf(client, book)
+    assert "<dc:language>und</dc:language>" in opf
+    assert 'xml:lang="und"' in chapter
+
+
+def test_epub_language_comes_from_the_pdf(client, app, tmp_path, monkeypatch):
+    import ctypes
+
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as pdfium_c
+
+    src, pdf = tmp_path / "plain.pdf", tmp_path / "roman.pdf"
+    pdfgen.make_novel(src, pages=2)
+    doc = pdfium.PdfDocument(str(src))
+    lang = ctypes.create_string_buffer("de-AT\x00".encode("utf-16-le"))
+    assert pdfium_c.FPDFCatalog_SetLanguage(doc.raw, ctypes.cast(lang, ctypes.POINTER(ctypes.c_ushort)))
+    doc.save(str(pdf))
+    doc.close()
+    book = import_and_convert(client, app, pdf)
+
+    # Export runs on the server's thread pool (and a paired phone can ask for it), so it must
+    # not use pdfium, which isn't thread-safe. Conversion is finished; any pdfium use now fails.
+    def no_pdfium(*_a, **_k):
+        raise AssertionError("EPUB export used pdfium")
+
+    monkeypatch.setattr(pdfium, "PdfDocument", no_pdfium)
+    opf, chapter = _opf(client, book)
+    assert "<dc:language>de-AT</dc:language>" in opf
+    assert 'lang="de-AT"' in chapter

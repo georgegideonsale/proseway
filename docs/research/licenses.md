@@ -59,7 +59,7 @@ Checked 2026-11-21. Versions are the latest on PyPI or npm that day. Licence sou
 | psutil | 7.2.2 | BSD-3-Clause | Yes | [GitHub](https://github.com/giampaolo/psutil) |
 | rapidfuzz | 3.14.6 | MIT | Yes | [GitHub](https://github.com/rapidfuzz/RapidFuzz) |
 | segno | 1.6.6 | BSD-3-Clause | Yes | [GitHub](https://github.com/heuer/segno) |
-| cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | Yes | Wheels embed OpenSSL 3 (Apache-2.0). [PyPI](https://pypi.org/project/cryptography/) |
+| cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | Yes | Direct dependency (`>=42`) since HTTPS phone sharing: makes the local CA and the server certificate (`src/proseway/certs.py`). Already required by pdfminer.six, so it adds nothing to the install. Wheels embed OpenSSL 3 (Apache-2.0). [PyPI](https://pypi.org/project/cryptography/), [LICENSE](https://github.com/pyca/cryptography/blob/main/LICENSE) |
 | hatchling | 1.33.0 | MIT | Yes (build-time only, not shipped) | [GitHub](https://github.com/pypa/hatch) |
 
 ## Frontend

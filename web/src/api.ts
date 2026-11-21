@@ -10,6 +10,19 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Drop the offline copies of books (chapters, notes, images) the service worker keeps. Called
+ * when the server says this phone isn't paired, for instance after it was unpaired on the
+ * computer: the copies shouldn't outlive the pairing.
+ */
+export function forgetOfflineData() {
+  if (typeof caches === "undefined") return; // only exists in secure contexts
+  caches
+    .keys()
+    .then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+    .catch(() => {});
+}
+
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method, headers: { "X-Proseway": "1" }, credentials: "same-origin" };
   if (body instanceof FormData) {
@@ -24,6 +37,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
   } catch {
     throw new ApiError(0, "offline", "Can't reach Proseway. Is it still running on your computer?");
   }
+  if (res.status === 401) forgetOfflineData();
   if (!res.ok) {
     let code = "error";
     let message = `Request failed (${res.status}).`;
@@ -41,7 +55,11 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
 
 export const api = {
   info: () => request<{ version: string; ocrAvailable: boolean; listener: "local" | "lan"; sharing: boolean }>("GET", "/api/info"),
-  session: () => request<{ listener: "local" | "lan"; paired: boolean }>("GET", "/api/session"),
+  session: () =>
+    request<{ listener: "local" | "lan"; paired: boolean }>("GET", "/api/session").then((s) => {
+      if (s.listener === "lan" && !s.paired) forgetOfflineData();
+      return s;
+    }),
   books: () => request<{ books: Book[] }>("GET", "/api/books"),
   book: (id: string) => request<{ book: Book }>("GET", `/api/books/${id}`),
   importFiles: (files: File[]) => {
@@ -78,8 +96,8 @@ export const api = {
     return request<{ result: Record<string, number> }>("POST", "/api/restore", fd);
   },
   sharing: () => request<SharingState>("GET", "/api/sharing"),
-  setSharing: (enabled: boolean, address?: string, minutes?: number) =>
-    request<SharingState>("POST", "/api/sharing", { enabled, address, minutes }),
+  setSharing: (enabled: boolean, address?: string, minutes?: number, secure?: boolean) =>
+    request<SharingState>("POST", "/api/sharing", { enabled, address, minutes, secure }),
   newCode: () => request<SharingState>("POST", "/api/sharing/new-code"),
   revokeDevice: (id: string) => request<SharingState>("DELETE", `/api/devices/${id}`),
   pair: (secret: string) => request<{ ok: true }>("POST", "/api/pair", { secret }),

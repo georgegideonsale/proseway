@@ -74,15 +74,22 @@ Then convert the book again from its menu in the library. OCR takes a few second
 
 Proseway only listens on your own computer until you say otherwise.
 
-1. In the library, choose **Read on your phone** and turn sharing on.
+1. In the library, choose **Read on your phone** and turn sharing on. Leave **Secure connection** ticked.
 2. Make sure your phone is on the same Wi-Fi.
-3. Scan the QR code with your phone's camera, or open the address shown and type the six-digit code.
+3. **The first time on each phone,** choose **Set up this phone** and scan that code. It opens a page where you download Proseway's certificate, with the steps to trust it:
+   - **iPhone/iPad:** in Safari, download it, install the profile in Settings, then turn on full trust under *Settings → General → About → Certificate Trust Settings*.
+   - **Android:** download it, then install it under *Settings → Security → Encryption & credentials → Install a certificate → CA certificate*. Menu names vary by phone.
+
+   Before you trust it, check that the fingerprint your phone shows matches the one on your computer. That page isn't encrypted, so if you can, send the certificate from your computer instead (the sharing window has a download link; use AirDrop, a USB cable or a file share). See [SECURITY.md](SECURITY.md) for why.
+4. Scan the pairing QR code with your phone's camera, or open the address shown and type the six-digit code.
+
+With the secure connection, your phone can add Proseway to its home screen and keep the chapters you've opened for reading offline. The certificate Proseway makes can only vouch for your computer's address on your network, never for websites or other devices. If that address changes (a different Wi-Fi network, say), Proseway makes a new certificate and each phone trusts it once more. You can remove them from your phone at any time.
 
 What sharing does and doesn't allow:
 - Sharing switches itself off after the time you choose (2 hours by default) and is always off when Proseway starts.
 - A paired phone can read, search, highlight and take notes. It can't import, delete or change settings.
-- You can unpair a phone at any time.
-- Use it on a network you trust, such as your home Wi-Fi. The connection isn't encrypted (see [SECURITY.md](SECURITY.md)).
+- You can unpair a phone at any time. The next time it reaches your computer, it also deletes the chapters it kept for offline reading.
+- If you untick **Secure connection**, the phone uses plain HTTP. There's no certificate step, but also no offline reading, and someone on the same network could see what you read. Only do that on a network you trust (see [SECURITY.md](SECURITY.md)).
 
 Want to read on the train, away from your computer? Use **Download as EPUB** from a book's menu and open the file in any EPUB reader on your phone.
 
